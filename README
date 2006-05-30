@@ -1,0 +1,49 @@
+WWW-phpBB version 0.01
+======================
+
+DESCRIPTION
+
+This module can be used to scrape a phpBB instalation using the web
+interface. It requires a local phpBB setup that will be overwritten and it can
+only access what is available to the web browser (no private messages or user
+settings). Scraping is possible as a guest or as a loged in member. If used
+with an administrator name and password it will copy all the members' e-mails
+(not just the public ones) allowing them to request a new random password from
+the new installation site and continue using the forum. The current implementation
+lacks search support, but this problem will disappear if you convert the forum
+to SMF. The "mforum" script is supported.
+
+
+INSTALLATION
+
+To install this module type the following:
+
+   perl Makefile.PL
+   make
+   make test
+   make install
+
+DEPENDENCIES
+
+This module requires these modules:
+
+WWW::Mechanize
+Compress::Zlib
+HTML::TokeParser::Simple
+DBI
+DBD::mysql
+
+TODO
+
+- parallel topic fetching; use 'fork'
+- better smile set handling; copy smileys along with the post data
+
+COPYRIGHT AND LICENCE
+
+Copyright (C) 2006 by Stefan Talpalaru - <stefantalpalaru@yahoo.com>
+
+This library is free software; you can redistribute it and/or modify
+it under the same terms as Perl itself, either Perl version 5.8.8 or,
+at your option, any later version of Perl 5 you may have available.
+
+
