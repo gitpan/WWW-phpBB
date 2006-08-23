@@ -4,3 +4,7 @@ Revision history for Perl extension WWW::phpBB.
 	- original version; created by h2xs 1.23 with options
 		-XAn WWW::phpBB
 
+0.02 
+     	- parallel fetching of topics
+	- removed Perl version requirement
+	

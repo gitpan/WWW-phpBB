@@ -1,4 +1,4 @@
-WWW-phpBB version 0.01
+WWW-phpBB version 0.02
 ======================
 
 DESCRIPTION
@@ -25,7 +25,7 @@ To install this module type the following:
 
 DEPENDENCIES
 
-This module requires these modules:
+This module requires:
 
 WWW::Mechanize
 Compress::Zlib
@@ -35,8 +35,8 @@ DBD::mysql
 
 TODO
 
-- parallel topic fetching; use 'fork'
 - better smile set handling; copy smileys along with the post data
+- parse search engin friendly URLs
 
 COPYRIGHT AND LICENCE
 

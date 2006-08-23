@@ -1,6 +1,6 @@
 package WWW::phpBB;
 
-use 5.008008;
+# use 5.008008;
 use strict;
 use warnings;
 no warnings qw(uninitialized);
@@ -10,6 +10,7 @@ use HTML::TokeParser::Simple;
 use Time::Local;
 use DBI();
 use Carp;
+use POSIX ":sys_wait_h";
 
 require Exporter;
 
@@ -17,7 +18,8 @@ our @ISA = qw(Exporter);
 our %EXPORT_TAGS = ();
 our @EXPORT_OK = ();
 our @EXPORT = qw();
-our $VERSION = '0.01';
+our $VERSION = '0.02';
+my $children; # number of spawned processes
 
 # defaults
 my %default = (
@@ -28,11 +30,12 @@ my %default = (
     post_date_pos => [qw(month_name day_of_month year hour minutes am_pm)],
     reg_date_format => qr/(\d+)\s+(\w+)\s+(\d+)/,
     reg_date_pos => [qw(day_of_month month_name year)],
-    max_tries => 20,
+    max_tries => 50,
     db_empty => [qw(users categories forums topics posts posts_text vote_desc vote_results)],
     bbcode_uid => '48d712e388',
     db_insert => 1,
     update_overwrite => 0,
+    max_children => 2,
     smiles => {
 	icon_biggrin => ':D',
 	icon_smile => ':)',
@@ -105,6 +108,7 @@ for (qw(
     max_tries
     db_empty
     db_insert
+    max_children
 )) { $ok_field{$_}++ };
 
 sub AUTOLOAD {
@@ -129,12 +133,12 @@ sub new {
     while (my ($key, $value) = each %default) {
 	$self->{$key} = $value unless exists $self->{$key};
     }
-    
+
     # croak if the mandatory arguments are missing
     for (qw(base_url db_host db_user db_passwd db_database db_prefix)) {
 	croak "you must specify a $_" unless exists $self->{$_};
     }
-    
+
     # init
     $self->{mmech} = new WWW::phpBB::Mech (stack_depth => 1);
     $self->{mmech}->agent_alias( 'Linux Mozilla' );
@@ -156,7 +160,7 @@ sub new {
 	$self->{dbh}->do("CREATE TABLE IF NOT EXISTS $self->{db_prefix}" . "posts_trans "
 	    . "LIKE $self->{db_prefix}" . "topics_trans");
     }
-    
+
     $self;
 }
 
@@ -248,10 +252,10 @@ sub get_categories_and_forums {
 	    $token = $parse->get_token until $token->is_text && $token->as_is =~ /\S/;
 	    $row{forum_posts} = $token->as_is;
 	    # forum_last_post_id
-	     $token = $parse->get_token until $token->is_start_tag('a')
+	    $token = $parse->get_token until $token->is_start_tag('a')
 	      && $token->get_attr('href') =~ /viewtopic.*p=(\d+)/
 	      || $token->is_end_tag('tr');
-	     $row{forum_last_post_id} = $1 if $token->is_start_tag('a');
+	    $row{forum_last_post_id} = $1 if $token->is_start_tag('a');
 	    # forum_order
 	    $forum_order += 10;
 	    $row{forum_order} = $forum_order;
@@ -285,9 +289,9 @@ sub get_topics {
     my $pages = $self->number_of_pages($mech);
     # get just one page ?
     if (defined $page_number) {
-	  if (-@$pages <= $page_number && $page_number < @$pages) {
-	      $pages = [ $$pages[$page_number] ];
-	  } else { return }
+	if (-@$pages <= $page_number && $page_number < @$pages) {
+	    $pages = [ $$pages[$page_number] ];
+	} else { return }
     }
     for ( @$pages ) {
 	my $url = $mech->uri;
@@ -326,12 +330,12 @@ sub get_topics {
 	      && $token->get_attr('href') =~ /viewtopic.*t=(\d+)/;
 	    $row{topic_id} = $1;
 	    # topic_title
-	    $token = $parse->get_token until $token->is_text 
+	    $token = $parse->get_token until $token->is_text
 	      && $token->as_is =~ /\S/;
 	    $row{topic_title} = $token->as_is;
 	    # topic_replies
 	    $token = $parse->get_token until $token->is_start_tag('td');
-	    $token = $parse->get_token until $token->is_text 
+	    $token = $parse->get_token until $token->is_text
 	      && $token->as_is =~ /^(\d+)$/;
 	    $row{topic_replies} = $1;
 	    # topic_poster
@@ -359,14 +363,14 @@ sub get_topics {
 	    $row{topic_poster} = -1 unless exists $row{topic_poster};
 	    # topic_views
 	    $token = $parse->get_token until $token->is_start_tag('td');
-	    $token = $parse->get_token until $token->is_text 
+	    $token = $parse->get_token until $token->is_text
 	      && $token->as_is =~ /^(\d+)$/;
 	    $row{topic_views} = $1;
 	    # topic_last_post_id
 	    $token = $parse->get_token until $token->is_start_tag('a')
 	      && $token->get_attr('href') =~ /viewtopic.*p=(\d+)/;
 	    $row{topic_last_post_id} = $1;
-	    
+
 	    # manage the same topic appearing on more pages (like announcements)
 	    my $unique = 1;
 	    for (@{$self->{topics}}) {
@@ -384,7 +388,7 @@ sub get_topics {
 		    $unique = 0;
 		}
 	    }
-	    
+
 	    push @{$self->{topics}}, \%row if $unique;
 	}
     }
@@ -410,9 +414,9 @@ sub get_users {
     my $pages = $self->number_of_pages($mech);
     # get just one page ?
     if (defined $page_number) {
-	  if (-@$pages <= $page_number && $page_number < @$pages) {
-	      $pages = [ $$pages[$page_number] ];
-	  } else { return }
+	if (-@$pages <= $page_number && $page_number < @$pages) {
+	    $pages = [ $$pages[$page_number] ];
+	} else { return }
     }
     for ( @$pages ) {
 	my $url = $mech->uri;
@@ -471,8 +475,8 @@ sub get_users {
 		if ($token->is_text
 		    && $token->as_is !~ /^(&nbsp;)+$/
 		    && $token->as_is =~ /\S/) {
-		    $row{user_from} = $token->as_is;
-		}
+			$row{user_from} = $token->as_is;
+		    }
 	    }
 	    # user_regdate
 	    $token = $parse->get_token until $token->is_text
@@ -491,7 +495,7 @@ sub get_users {
 			$row{user_website} = $token->get_attr('href');
 		    }
 	    }
-	    
+
 	    # get profile info
 	    # make a copy of the $mech object in order to get the profile page
 	    my $p_mech = {%{$mech}};
@@ -519,7 +523,7 @@ sub get_users {
 		    $row{user_avatar} = $p_token->get_attr('src');
 		    (my $b_url = $p_mech->uri) =~ s%^(.*/).*$%$1%;
 		    $row{user_avatar} = $b_url . $row{user_avatar}
-		      if $row{user_avatar} !~ m%^http://%;
+		    if $row{user_avatar} !~ m%^http://%;
 		    $row{user_avatar_type} = 2;
 		    last;
 		}
@@ -573,13 +577,13 @@ sub get_users {
 	      && $p_token->get_attr('href') =~ /to=(.+?)(&|$)/
 	      || $p_token->is_end_tag('tr');
 	    $row{user_icq} = $1 if $p_token->is_start_tag('a');
-	    # TODO: get the signature
-	    
+
 	    push @{$self->{users}}, \%row;
 	    if ($self->{db_insert} && ++$rows == $self->{max_rows}) {
 		$self->insert_array($self->{users}, "users");
 		@{$self->{users}} = ();
 	    }
+
 	}
     }
     if ($self->{db_insert}) {
@@ -608,9 +612,9 @@ sub get_posts {
     my $pages = $self->number_of_pages($mech);
     # get just one page ?
     if (defined $page_number) {
-	  if (-@$pages <= $page_number && $page_number < @$pages) {
-	      $pages = [ $$pages[$page_number] ];
-	  } else { return }
+	if (-@$pages <= $page_number && $page_number < @$pages) {
+	    $pages = [ $$pages[$page_number] ];
+	} else { return }
     }
     for ( @$pages ) {
 	my $url = $mech->uri;
@@ -654,7 +658,7 @@ sub get_posts_from_page {
     my $token;
     my $rows;
     my %v_row;
-    
+
     $token = $parse->get_token;
     $token = $parse->get_token until $token->get_attr('class') eq 'forumline';
     for (1..2) {
@@ -724,7 +728,7 @@ sub get_posts_from_page {
 	    push @{$self->{vote_desc}}, \%v_row;
 	}
     }
-    
+
     while ( $token = $parse->get_token ) {
 	last if $token->get_attr('class') eq 'catBottom';
 	# post_username
@@ -753,7 +757,7 @@ sub get_posts_from_page {
 	if (@{$self->{posts}} && $row{post_time} <= $self->{posts}[-1]->{post_time}) {
 	    $row{post_time} = $self->{posts}[-1]->{post_time} + 1
 	}
-	
+
 	## fill some @{$self->{topics}} and @{$self->{vote_desc}} fields ##
 	# just for the first page
 	if ($start_from == 0) {
@@ -761,15 +765,15 @@ sub get_posts_from_page {
 		if ($_->{topic_id} == $topic_id) {
 		    # topic_first_post_id
 		    $_->{topic_first_post_id} = $row{post_id}
-		      unless $_->{topic_first_post_id};
+		    unless $_->{topic_first_post_id};
 		    # vote_start and topic_time
 		    $v_row{vote_start} = $_->{topic_time} = $row{post_time}
-		      unless $_->{topic_time};
+		    unless $_->{topic_time};
 		    last;
 		}
 	    }
 	}
-	
+
         # @{$self->{posts_text}}
 	my %t_row;
 	# post_subject
@@ -812,7 +816,7 @@ sub get_posts_from_page {
 	    $row{poster_id} = -1;
 	    $row{post_username} = $post_username;
 	}
-	
+
 	push @{$self->{posts}}, \%row;
 	push @{$self->{posts_text}}, \%t_row;
 	if ($self->{db_insert} && ++$rows == $self->{max_rows}) {
@@ -823,7 +827,7 @@ sub get_posts_from_page {
 	    @{$self->{posts}} = ();
 	    # put it back
 	    push @{$self->{posts}}, $lastpost;
-	    
+
 	    $self->insert_array($self->{posts_text}, "posts_text");
 	    @{$self->{posts_text}} = ();
 	}
@@ -849,7 +853,7 @@ sub update_users {
 		last MLOOP;
 	    } elsif ($_->{user_regdate} == $max_regdate) {
 		$sth = $self->{dbh}->prepare("SELECT user_id, username FROM $self->{db_prefix}"
-		. "users WHERE user_regdate=$max_regdate");
+		    . "users WHERE user_regdate=$max_regdate");
 		$sth->execute;
 		$sth->bind_columns(\my ($user_id, $username));
 		while ($sth->fetch) {
@@ -886,7 +890,7 @@ sub update_topics {
 	last unless @{$self->{topics}};
 	for (@{$self->{topics}}) {
 	    my $sth = $self->{dbh}->prepare("SELECT post_time FROM $self->{db_prefix}"
-	    . "posts WHERE post_id=" . $_->{topic_last_post_id});
+		. "posts WHERE post_id=" . $_->{topic_last_post_id});
 	    $sth->execute;
 	    $sth->bind_columns(\my $post_time);
 	    if ($sth->fetch) {
@@ -953,7 +957,7 @@ sub update_posts {
 	    my $sth;
 	    last PAGE if $self->{posts}[$_]{post_time} < $self->{last_timestamp};
 	    # don't get the posts that appeared betwen scraping the topic
-	    # and scraping the posts, because it will mess up 
+	    # and scraping the posts, because it will mess up
 	    # our last_timestamp at the next update
 	    for my $t (@{$self->{topics}}) {
 		if ($t->{topic_id} == $topic_id) {
@@ -961,10 +965,10 @@ sub update_posts {
 		    last;
 		}
 	    }
-	    
+
 	    my ($in_table, $in_orig, $in_new);
 	    my $new_id;
-	    
+
 	    $sth = $self->{dbh}->prepare("SELECT post_id FROM $self->{db_prefix}"
 		. "posts WHERE post_id=" . $self->{posts}[$_]{post_id});
 	    $sth->execute;
@@ -988,7 +992,7 @@ sub update_posts {
 		    $in_orig = 1;
 		}
 	    }
-	    
+
 	    if ($in_table) {
 		# could be already scraped, check post_text
 		my $against_id = $self->{posts}[$_]{post_id};
@@ -1015,7 +1019,7 @@ sub update_posts {
 		    $self->{posts_text}[$_]{post_id} = $self->{posts}[$_]{post_id} = $last_post_id;
 		}
 	    }
-	    
+
 	    push @new_posts, $self->{posts}[$_];
 	    push @new_posts_text, $self->{posts_text}[$_];
 	}
@@ -1029,7 +1033,7 @@ sub update_posts {
 sub update_posts_insert {
     my $self = shift;
     my $sth;
-    
+
     for (@{$self->{posts}}) {
 	unless ($self->{update_overwrite}) {
 	    # coordinate topic_id
@@ -1042,9 +1046,9 @@ sub update_posts_insert {
 		$_->{topic_id} = $new_topic_id;
 	    }
 	}
-	
+
     }
-    
+
     $self->insert_array($self->{posts}, 'posts');
     $self->insert_array($self->{posts_text}, 'posts_text');
 }
@@ -1186,44 +1190,44 @@ sub html_to_bbcode {
 		$text .= "[list=1:$self->{bbcode_uid}]";
 		push @close_tag, "[/list:o:$self->{bbcode_uid}]";
 	    } elsif ($token->is_start_tag('ol')
-	    && $token->get_attr('type') eq 'a') {
-		$text .= "[list=a:$self->{bbcode_uid}]";
-		push @close_tag, "[/list:o:$self->{bbcode_uid}]";
-	    } elsif ($token->is_end_tag('ol')) {
-		$text .= pop @close_tag;
-	    } elsif ($token->is_start_tag('li')) {
-		$text .= "[*:$self->{bbcode_uid}]";
-	    } elsif ($token->is_tag('img')) {
-		# check for smiles
-		my $is_smile;
-		my $src = $token->get_attr('src');
-		for (keys %{$self->{smiles}}) {
-		    if ( $src =~ /\/$_\.gif/ ) {
-			$text .= $self->{smiles}{$_};
-			$is_smile = 1;
-			last;
+		&& $token->get_attr('type') eq 'a') {
+		    $text .= "[list=a:$self->{bbcode_uid}]";
+		    push @close_tag, "[/list:o:$self->{bbcode_uid}]";
+		} elsif ($token->is_end_tag('ol')) {
+		    $text .= pop @close_tag;
+		} elsif ($token->is_start_tag('li')) {
+		    $text .= "[*:$self->{bbcode_uid}]";
+		} elsif ($token->is_tag('img')) {
+		    # check for smiles
+		    my $is_smile;
+		    my $src = $token->get_attr('src');
+		    for (keys %{$self->{smiles}}) {
+			if ( $src =~ /\/$_\.gif/ ) {
+			    $text .= $self->{smiles}{$_};
+			    $is_smile = 1;
+			    last;
+			}
 		    }
+		    unless ($is_smile) {
+			# a simple image
+			$text .= "[img:$self->{bbcode_uid}]"
+			  . $token->get_attr('src')
+			  . "[/img:$self->{bbcode_uid}]";
+		    }
+		} elsif ($token->is_start_tag('a')) {
+		    if ($token->get_attr('href') =~ /mailto:/) {
+			push @close_tag, "";
+			next;
+		    }
+		    $text .= "[url="
+		      . $token->get_attr('href')
+		      . "]";
+		    push @close_tag, "[/url]";
+		} elsif ($token->is_end_tag('a')) {
+		    $text .= pop @close_tag;
+		} elsif ($token->is_text) {
+		    $text .= $token->as_is;
 		}
-		unless ($is_smile) {
-		    # a simple image
-		    $text .= "[img:$self->{bbcode_uid}]"
-		      . $token->get_attr('src')
-		      . "[/img:$self->{bbcode_uid}]";
-		}
-	    } elsif ($token->is_start_tag('a')) {
-		if ($token->get_attr('href') =~ /mailto:/) {
-		    push @close_tag, "";
-		    next;
-		}
-		$text .= "[url="
-		  . $token->get_attr('href')
-		  . "]";
-		push @close_tag, "[/url]";
-	    } elsif ($token->is_end_tag('a')) {
-		$text .= pop @close_tag;
-	    } elsif ($token->is_text) {
-	    $text .= $token->as_is;
-	}
     }
     \$text;
 }
@@ -1237,19 +1241,19 @@ sub parse_date {
     for( my $i=0; $i<@{$self->{months}}; $i++ ) {
 	$month_number{$self->{months}[$i]} = $i;
     }
-    
+
     $_ = $str;
     return 0 unless /$date_format/;
     my @res = /$date_format/;
     for (my $i = 0; $i < @res; $i++) {
 	$date_vars{$$date_pos[$i]} = $res[$i];
     }
-    
+
     # strip leading zero
     for (qw(seconds minutes hour day_of_month)) {
 	$date_vars{$_} =~ s/^0(\d)/$1/ if exists $date_vars{$_};
     }
-    
+
     # AM/PM
     if (exists $date_vars{am_pm}) {
 	$date_vars{hour} += 12 if $date_vars{am_pm} =~ /pm/i
@@ -1259,7 +1263,7 @@ sub parse_date {
     }
     # month name
     $date_vars{mon} = $month_number{lc substr($date_vars{month_name}, 0, 3)}
-      if exists $date_vars{month_name};
+    if exists $date_vars{month_name};
     # month
     $date_vars{mon} = $date_vars{month} - 1 if exists $date_vars{month};
     # get rid of warnings
@@ -1320,6 +1324,42 @@ sub compute_url {
     $url .= $url2;
 }
 
+sub reaper {
+    while (waitpid(-1, WNOHANG) > 0) {
+	$children--;
+    }
+    $SIG{CHLD} = \&reaper;
+}
+$SIG{CHLD} = \&reaper;
+
+# takes a function reference as argument
+# remember to "wait for 1..$children;" after the loop
+sub parallelize {
+    my $self = shift;
+    my ($func_ref) = @_;
+    
+    if ($children < $self->{max_children}) { # fork a subprocess
+	if (my $pid = fork) {
+	    # parent
+	    $children++;
+	    if ($children == $self->{max_children}) {
+		wait;
+		$children--;
+	    }
+	} else {
+	    # child
+	    croak "can't fork" if undef $pid;
+	    # the db link was destroyed by forking. create it again
+	    $self->{dbh}{InactiveDestroy} = 1;
+	    $self->{dbh} = DBI->connect("DBI:mysql:database=$self->{db_database};host=$self->{db_host};mysql_compression=$self->{db_compression}",
+		$self->{db_user}, $self->{db_passwd}, {AutoCommit => 1, RaiseError => 1});
+	    # run function
+	    &$func_ref;
+	    exit;
+	}
+    }
+}
+
 #########################
 # integrating functions #
 #########################
@@ -1330,12 +1370,17 @@ sub scrape_forum_common {
     for (@{$self->{forums}}) {
     	$self->get_topics( $_->{forum_id} );
     	for (@{$self->{topics}}) {
-    	    $self->get_posts( $_->{topic_id} );
-    	    $self->insert_array([$_], "topics");
+	    $self->parallelize(
+		sub {
+		    $self->get_posts( $_->{topic_id} );
+		    $self->insert_array([$_], "topics");
+		}
+	    );
     	}
     	@{$self->{topics}} = ();
-	$self->update_forum_first_last_post($_->{forum_id});
     }
+    wait for 1..$children;
+    $self->update_forum_first_last_post($_->{forum_id}) for @{$self->{forums}};
 }
 
 sub update_forum_common {
@@ -1367,7 +1412,7 @@ WWW::phpBB - phpBB forum scraper
 =head1 SYNOPSIS
 
     use WWW::phpBB;
-    
+
     # scrape as guest
     my $phpbb = WWW::phpBB->new(
         base_url => 'http://localhost/~stefan/forum1',
@@ -1401,7 +1446,7 @@ WWW::phpBB - phpBB forum scraper
     $phpbb->get_users();
     $phpbb->forum_logout();
     $phpbb->scrape_forum_common();
-    
+
     # update an already scraped forum, maybe as a daily cron job
     # $phpbb->update_overwrite(1); # don't try to keep modified data
     $phpbb->update_users();
@@ -1521,6 +1566,10 @@ date as it appears in the memberlist.
 =item * C<< max_tries => $value >>
 
 How many times to try fetching a forum page until giving up.
+
+=item * C<< max_children => $value >>
+
+How many parallel processes should be used for fetching. Defaults to 2.
 
 =item * C<< db_empty => [qw(users categories forums topics posts posts_text vote_desc vote_results)] >>
 
