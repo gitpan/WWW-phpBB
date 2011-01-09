@@ -1,6 +1,5 @@
 package WWW::phpBB;
 
-# use 5.008008;
 use strict;
 use warnings;
 no warnings qw(uninitialized);
@@ -18,7 +17,7 @@ our @ISA = qw(Exporter);
 our %EXPORT_TAGS = ();
 our @EXPORT_OK = ();
 our @EXPORT = qw();
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 my $children; # number of spawned processes
 
 # defaults
@@ -30,12 +29,18 @@ my %default = (
     post_date_pos => [qw(month_name day_of_month year hour minutes am_pm)],
     reg_date_format => qr/(\d+)\s+(\w+)\s+(\d+)/,
     reg_date_pos => [qw(day_of_month month_name year)],
+    forum_link_regex => qr/f=(\d+)/,
+    topic_link_regex_p => qr/viewtopic.*p=(\d+)/,
+    topic_link_regex_t => qr/viewtopic.*t=(\d+)/,
+    topic_link1 => "viewtopic.php",
+    topic_link2 => "t=%d&postorder=asc",
     max_tries => 50,
     db_empty => [qw(users categories forums topics posts posts_text vote_desc vote_results)],
     bbcode_uid => '48d712e388',
     db_insert => 1,
     update_overwrite => 0,
-    max_children => 2,
+    verbose => 0,
+    max_children => 1,
     smiles => {
 	icon_biggrin => ':D',
 	icon_smile => ':)',
@@ -66,20 +71,6 @@ for (qw(categories forums topics users posts posts_text vote_desc vote_results))
     $default{$_} = [];
 }
 
-###############
-# subpackages #
-###############
-package WWW::phpBB::Mech;
-use base 'WWW::Mechanize';
-
-sub update_html {
-    my ($self, $html) = @_;
-    if (my $encoding = $self->response->content_encoding ) {
-	$html = Compress::Zlib::memGunzip($html) if $encoding =~ /gzip/;
-	$html = Compress::Zlib::uncompress($html) if $encoding =~ /deflate/;
-    }
-    $self->WWW::Mechanize::update_html( $html );
-}
 
 package WWW::phpBB;
 
@@ -105,10 +96,16 @@ for (qw(
     post_date_pos
     reg_date_format
     reg_date_pos
+    forum_link_regex
+    topic_link_regex_p
+    topic_link_regex_t
+    topic_link1
+    topic_link2
     max_tries
     db_empty
     db_insert
     max_children
+    verbose
 )) { $ok_field{$_}++ };
 
 sub AUTOLOAD {
@@ -140,11 +137,11 @@ sub new {
     }
 
     # init
-    $self->{mmech} = new WWW::phpBB::Mech (stack_depth => 1);
-    $self->{mmech}->agent_alias( 'Linux Mozilla' );
-    $self->{mmech}->add_header('Accept-Encoding' => 'gzip; deflate');
+    $self->{mmech} = WWW::Mechanize->new(stack_depth => 1);
+    $self->{mmech}->agent_alias('Linux Mozilla');
+    #$self->{mmech}->add_header('Accept-Encoding' => 'gzip; deflate');
     for (1..$self->{max_tries}) {
-	$self->{mmech}->get( $self->{base_url} );
+	$self->{mmech}->get($self->{base_url});
 	last if $self->{mmech}->success;
 	print "Error fetching the start page (try $_ out of $self->{max_tries})\n";
     }
@@ -166,12 +163,24 @@ sub new {
 
 sub forum_login {
     my $self = shift;
-    return unless exists $self->{forum_user} && exists $self->{forum_passwd};
+    if (!exists $self->{forum_user} || !exists $self->{forum_passwd}) {
+    	print "can't login without a forum_user and forum_passwd\n";
+	return;
+    }
+    if ($self->{verbose}) {
+    	print "logging in...";
+    }
     for (1..$self->{max_tries}) {
+	#$self->{mmech}->form_number(1);
 	$self->{mmech}->field('username', $self->{forum_user});
 	$self->{mmech}->field('password', $self->{forum_passwd});
-	$self->{mmech}->click;
-	last if $self->{mmech}->success;
+	$self->{mmech}->click();
+	if ($self->{mmech}->success) {
+      	    if ($self->{verbose}) {
+	  	print "\n";
+            }
+	    last;
+	}
 	print "Error logging in (try $_ out of $self->{max_tries})\n";
     }
     croak "gave up...\n" unless $self->{mmech}->success;
@@ -186,6 +195,8 @@ sub forum_logout {
 	print "Error logging out (try $_ out of $self->{max_tries})\n";
     }
     croak "gave up...\n" unless $self->{mmech}->success;
+    # reset the base_uri
+    $self->{mmech}->get($self->{base_url})
 }
 
 sub get_categories_and_forums {
@@ -230,7 +241,7 @@ sub get_categories_and_forums {
 	    $row{auth_pollcreate} = 1;
 	    $row{auth_sticky} = $row{auth_announce} = $row{auth_attachments} = 3;
 	    # forum_id
-	    $token->get_attr('href') =~ /f=(\d+)/;
+	    $token->get_attr('href') =~ $self->{forum_link_regex};
 	    $row{forum_id} = $1;
 	    # cat_id
 	    $row{cat_id} = $cat_id;
@@ -253,7 +264,7 @@ sub get_categories_and_forums {
 	    $row{forum_posts} = $token->as_is;
 	    # forum_last_post_id
 	    $token = $parse->get_token until $token->is_start_tag('a')
-	      && $token->get_attr('href') =~ /viewtopic.*p=(\d+)/
+	      && $token->get_attr('href') =~ $self->{topic_link_regex_p}
 	      || $token->is_end_tag('tr');
 	    $row{forum_last_post_id} = $1 if $token->is_start_tag('a');
 	    # forum_order
@@ -277,7 +288,7 @@ sub get_topics {
     my $rows;
     # make a copy of the $mech object
     my $mech = {%{$self->{mmech}}};
-    bless $mech, "WWW::phpBB::Mech";
+    bless $mech, "WWW::Mechanize";
     my $url = $self->compute_url("viewforum.php", "f=$forum_id");
     for (1..$self->{max_tries}) {
 	$mech->get($url);
@@ -309,7 +320,7 @@ sub get_topics {
 	$parse->unbroken_text( 1 );
 	my $token;
 	$token = $parse->get_token;
-	$token = $parse->get_token until $token->get_attr('class') eq 'forumline';
+	$token = $parse->get_token until (!defined $token || $token->get_attr('class') eq 'forumline');
 	$token = $parse->get_token until $token->is_end_tag('tr');
 	while ($token = $parse->get_token) {
 	    last if $token->is_end_tag('table');
@@ -327,7 +338,7 @@ sub get_topics {
 	    $row{topic_type} = 2 if $token->get_attr('src') =~ /announce/;
 	    # topic_id
 	    $token = $parse->get_token until $token->is_start_tag('a')
-	      && $token->get_attr('href') =~ /viewtopic.*t=(\d+)/;
+	      && $token->get_attr('href') =~ $self->{topic_link_regex_t};
 	    $row{topic_id} = $1;
 	    # topic_title
 	    $token = $parse->get_token until $token->is_text
@@ -363,12 +374,11 @@ sub get_topics {
 	    $row{topic_poster} = -1 unless exists $row{topic_poster};
 	    # topic_views
 	    $token = $parse->get_token until $token->is_start_tag('td');
-	    $token = $parse->get_token until $token->is_text
-	      && $token->as_is =~ /^(\d+)$/;
+	    $token = $parse->get_token until (!defined $token || ($token->is_text && $token->as_is =~ /^(\d+)$/));
 	    $row{topic_views} = $1;
 	    # topic_last_post_id
 	    $token = $parse->get_token until $token->is_start_tag('a')
-	      && $token->get_attr('href') =~ /viewtopic.*p=(\d+)/;
+	      && $token->get_attr('href') =~ $self->{topic_link_regex_p};
 	    $row{topic_last_post_id} = $1;
 
 	    # manage the same topic appearing on more pages (like announcements)
@@ -397,12 +407,15 @@ sub get_topics {
 # $_[0]=$page_number
 sub get_users {
     my $self = shift;
+    if ($self->{verbose}) {
+    	print "getting users...";
+    }
     my ($page_number) = @_;
     my $success;
     my $rows;
     # make a copy of the $mech object
     my $mech = {%{$self->{mmech}}};
-    bless $mech, "WWW::phpBB::Mech";
+    bless $mech, "WWW::Mechanize";
     my $url = $self->compute_url("memberlist.php", "");
     for (1..$self->{max_tries}) {
 	$mech->get($url);
@@ -470,8 +483,9 @@ sub get_users {
 		}
 	    }
 	    # user_from
+	    $token = $parse->get_token until $token->is_start_tag('td');
 	    while ($token = $parse->get_token) {
-		last if $token->is_end_tag('td');
+		last if $token->is_start_tag('td') && $token->get_attr('class') =~ /row/;
 		if ($token->is_text
 		    && $token->as_is !~ /^(&nbsp;)+$/
 		    && $token->as_is =~ /\S/) {
@@ -481,6 +495,7 @@ sub get_users {
 	    # user_regdate
 	    $token = $parse->get_token until $token->is_text
 	      && $token->as_is =~ /\S/;
+	    #print $token->as_is(), "\n";
 	    $row{user_regdate} = $self->parse_date($token->as_is, $self->{reg_date_format},
 		$self->{reg_date_pos});
 	    # user_posts
@@ -499,7 +514,7 @@ sub get_users {
 	    # get profile info
 	    # make a copy of the $mech object in order to get the profile page
 	    my $p_mech = {%{$mech}};
-	    bless $p_mech, "WWW::phpBB::Mech";
+	    bless $p_mech, "WWW::Mechanize";
 	    my $urlp = $self->compute_url("profile.php", "mode=viewprofile&u=$row{user_id}");
 	    for (1..$self->{max_tries}) {
 		$p_mech->get($urlp);
@@ -590,6 +605,9 @@ sub get_users {
 	$self->insert_array($self->{users}, "users");
 	@{$self->{users}} = ();
     }
+    if ($self->{verbose}) {
+    	print "\n";
+    }
 }
 
 # $_[0]=$topic_id, $_[1]=$page_number
@@ -597,11 +615,15 @@ sub get_posts {
     my $self = shift;
     my ($topic_id, $page_number) = @_;
     my $success;
-    my $url;
+    my ($url, $url1, $url2);
     # make a copy of the $mech object
     my $mech = {%{$self->{mmech}}};
-    bless $mech, "WWW::phpBB::Mech";
-    $url = $self->compute_url("viewtopic.php", "t=$topic_id&postorder=asc");
+    bless $mech, "WWW::Mechanize";
+    $url1 = $self->{topic_link1};
+    $url1 = sprintf($url1, $topic_id) if $url1 =~ m/%d/;
+    $url2 = $self->{topic_link2};
+    $url2 = sprintf($url2, $topic_id) if $url2 =~ m/%d/;
+    $url = $self->compute_url($url1, $url2);
     for (1..$self->{max_tries}) {
 	$mech->get($url);
 	last if $mech->success;
@@ -737,7 +759,7 @@ sub get_posts_from_page {
 	my $post_username = $token->as_is;
 	# post_id
 	$token = $parse->get_token until $token->is_start_tag('a')
-	  && $token->get_attr('href') =~ /viewtopic.*p=(\d+)/;
+	  && $token->get_attr('href') =~ $self->{topic_link_regex_p};
 	my %row;
 	$row{post_id} = $1;
 	# topic_id
@@ -1366,8 +1388,17 @@ sub parallelize {
 
 sub scrape_forum_common {
     my $self = shift;
+    if ($self->{verbose}) {
+    	print "getting categories and forums...";
+    }
     $self->get_categories_and_forums();
+    if ($self->{verbose}) {
+    	print "\n";
+    }
     for (@{$self->{forums}}) {
+    	if ($self->{verbose}) {
+      	    print "getting forum with id ", $_->{forum_id}, " ...";
+    	}
     	$self->get_topics( $_->{forum_id} );
     	for (@{$self->{topics}}) {
 	    $self->parallelize(
@@ -1378,6 +1409,9 @@ sub scrape_forum_common {
 	    );
     	}
     	@{$self->{topics}} = ();
+    	if ($self->{verbose}) {
+      	    print "\n";
+    	}
     }
     wait for 1..$children;
     $self->update_forum_first_last_post($_->{forum_id}) for @{$self->{forums}};
@@ -1407,7 +1441,7 @@ sub update_forum_common {
 __END__
 =head1 NAME
 
-WWW::phpBB - phpBB forum scraper
+WWW::phpBB - phpBB2 forum scraper
 
 =head1 SYNOPSIS
 
@@ -1421,26 +1455,47 @@ WWW::phpBB - phpBB forum scraper
         db_passwd => 'somepass',
         db_database => 'stefan',
         db_prefix => 'phpbb2_',
-     );
+    );
 
     $phpbb->empty_tables();
     $phpbb->get_users();
     $phpbb->scrape_forum_common();
 
-    # scrape a german forum, loging in just to get the memberlist
+    # scrape a german forum with a non-standard date format and a custom GET var
     my $phpbb = WWW::phpBB->new(
         base_url => 'http://localhost/~stefan/index.php?mforum=de',
         db_host => 'localhost',
         db_user => 'stefan',
         db_passwd => 'somepass',
         db_database => 'stefan',
-        db_prefix => 'phpbb3_',
+        db_prefix => 'phpbb2_',
         post_date_format => qr/(\d+)\s+(\w+),\s+(\d+)\s+(\d+):(\d+)/,
         post_date_pos => [qw(day_of_month month_name year hour minutes)],
         forum_user => 'raDical',
         forum_passwd => 'lfdiugyh',
-     );
+    );
 
+    # another forum from foren-city.de with a custom URL scheme
+    my $phpbb = WWW::phpBB->new(
+	base_url => 'http://someforum.foren-city.de',
+	db_host => 'localhost',
+	db_user => 'stefan',
+	db_passwd => 'somepass',
+	db_database => 'phpbbtest',
+	db_prefix => 'phpbb_',
+	verbose => 1,
+	forum_user => 'someuser',
+	forum_passwd => 'someotherpass',
+	post_date_format => qr/(\d+)\s+(\w+)\s+(\d+)\s+(\d+):(\d+)/,
+	post_date_pos => [qw(day_of_month month_name year hour minutes)],
+	forum_link_regex => qr/forum,(\d+),/,
+	topic_link_regex_p => qr/topic,.*#(\d+)/,
+	topic_link_regex_t => qr/topic,(\d+),/,
+	topic_link1 => "topic,%d.html",
+	topic_link2 => "",
+    );
+
+    # we're logging in just to get the memberlist
     $phpbb->empty_tables();
     $phpbb->forum_login();
     $phpbb->get_users();
@@ -1454,15 +1509,17 @@ WWW::phpBB - phpBB forum scraper
 
 =head1 DESCRIPTION
 
-This module can be used to scrape a phpBB instalation using the web
-interface. It requires a local phpBB setup that will be overwritten and it can
-only access what is available to the web browser (no private messages or user
-settings). Scraping is possible as a guest or as a loged in member. If used
-with an administrator name and password it will copy all the member e-mails (not
-just the public ones) allowing them to request a new random password from the
-new installation site and continue using the forum. The current implementation
-lacks search support, but this problem will disappear if you convert the forum
-to SMF. The "mforum" script is supported.
+This module can be used to scrape a phpBB2 instalation using the web interface.
+It requires a local phpBB2 setup (you can download the old 2.x versions from
+http://sourceforge.net/projects/phpbb/files/phpBB%202/ ) that will be
+overwritten and it can only access what is available to the web browser (i.e. no
+private messages or user settings). Make sure the username used during the
+local installation doesn't exist in the remote forum. Scraping is possible as a
+guest or as a loged in member. If used with an administrator name and password
+it will copy all the member e-mails (not just the public ones) allowing them to
+request a new random password from the new installation site and continue using
+the forum. The current implementation lacks search support, but this can be fixed
+by converting the forum to phpBB3 or SMF. The "mforum" script is supported.
 
 =head1 REQUIRED MODULES
 
@@ -1563,13 +1620,37 @@ seconds
 Same requirements as for the post date, only that they refer to the registration
 date as it appears in the memberlist.
 
+=item * C<< forum_link_regex => regex >>
+
+default: qr/f=(\d+)/
+
+=item * C<< topic_link_regex_p => regex >>
+
+Regex for the topic link with the post id. Defaults to qr/viewtopic.*p=(\d+)/
+
+=item * C<< topic_link_regex_t => regex >>
+
+Regex for the topic link with the topic id. Defaults to qr/viewtopic.*t=(\d+)/
+
+=item * C<< topic_link1 => string >>
+
+First part of the topic page link. The topic id will be inserted with sprintf if "%d" is found. Defaults to "viewtopic.php".
+
+=item * C<< topic_link2 => string >>
+
+Second part of the topic page link, consisting of GET vars. The topic id will be inserted with sprintf if "%d" is found. Defaults to "t=%d&postorder=asc".
+
+=item * C<< verbose => [0|1] >>
+
+Verbosity. Defaults to 0.
+
 =item * C<< max_tries => $value >>
 
-How many times to try fetching a forum page until giving up.
+How many times to try fetching a forum page until giving up. Defaults to 50.
 
 =item * C<< max_children => $value >>
 
-How many parallel processes should be used for fetching. Defaults to 2.
+How many parallel processes should be used for fetching. Defaults to 1.
 
 =item * C<< db_empty => [qw(users categories forums topics posts posts_text vote_desc vote_results)] >>
 
@@ -1629,10 +1710,10 @@ Stefan Talpalaru, E<lt>stefantalpalaru@yahoo.comE<gt>
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (C) 2006 by Stefan Talpalaru
+Copyright (c) 2006-2011 by Stefan Talpalaru
 
 This library is free software; you can redistribute it and/or modify
-it under the same terms as Perl itself, either Perl version 5.8.8 or,
+it under the same terms as Perl itself, either Perl version 5.12.2 or,
 at your option, any later version of Perl 5 you may have available.
 
 

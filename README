@@ -1,18 +1,19 @@
-WWW-phpBB version 0.02
+WWW-phpBB version 0.03
 ======================
 
 DESCRIPTION
 
-This module can be used to scrape a phpBB instalation using the web
-interface. It requires a local phpBB setup that will be overwritten and it can
-only access what is available to the web browser (no private messages or user
-settings). Scraping is possible as a guest or as a loged in member. If used
-with an administrator name and password it will copy all the members' e-mails
-(not just the public ones) allowing them to request a new random password from
-the new installation site and continue using the forum. The current implementation
-lacks search support, but this problem will disappear if you convert the forum
-to SMF. The "mforum" script is supported.
-
+This module can be used to scrape a phpBB2 installation using the web interface.
+It requires a local phpBB2 setup (you can download the old 2.x versions from
+http://sourceforge.net/projects/phpbb/files/phpBB%202/ ) that will be
+overwritten and it can only access what is available to the web browser (i.e. no
+private messages or user settings). Make sure the username used during the
+local installation doesn't exist in the remote forum. Scraping is possible as a
+guest or as a logged in member. If used with an administrator name and password
+it will copy all the member e-mails (not just the public ones) allowing them to
+request a new random password from the new installation site and continue using
+the forum. The current implementation lacks search support, but this can be fixed
+by converting the forum to phpBB3 or SMF. The "mforum" script is supported.
 
 INSTALLATION
 
@@ -35,15 +36,15 @@ DBD::mysql
 
 TODO
 
-- better smile set handling; copy smileys along with the post data
-- parse search engin friendly URLs
+- better smiley set handling; copy smilies along with the post data
+- parse more search engine friendly URLs
 
-COPYRIGHT AND LICENCE
+COPYRIGHT AND LICENSE
 
-Copyright (C) 2006 by Stefan Talpalaru - <stefantalpalaru@yahoo.com>
+Copyright (c) 2006-2011 by Stefan Talpalaru - <stefantalpalaru@yahoo.com>
 
 This library is free software; you can redistribute it and/or modify
-it under the same terms as Perl itself, either Perl version 5.8.8 or,
+it under the same terms as Perl itself, either Perl version 5.12.2 or,
 at your option, any later version of Perl 5 you may have available.
 
 
