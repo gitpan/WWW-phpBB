@@ -17,7 +17,7 @@ our @ISA = qw(Exporter);
 our %EXPORT_TAGS = ();
 our @EXPORT_OK = ();
 our @EXPORT = qw();
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 my $children; # number of spawned processes
 
 # defaults
@@ -1598,63 +1598,63 @@ WWW::phpBB - phpBB2 forum scraper
 
 =head1 FANCY EXAMPLE
 
-use WWW::phpBB;
+    use WWW::phpBB;
 
-# custom subclass
-package WWW::phpBB::custom;
-use base 'WWW::phpBB';
+    # custom subclass
+    package WWW::phpBB::custom;
+    use base 'WWW::phpBB';
 
-# override some methods
-sub forum_url_for_page {
-	my $self = shift;
-	my ($url, $forum_id, $page) = @_;
+    # override some methods
+    sub forum_url_for_page {
+	    my $self = shift;
+	    my ($url, $forum_id, $page) = @_;
 
-	$url =~ s%[^/]*$%%;
-	$url .= "forum,$forum_id,$page.html";
-	return $url;
-}
+	    $url =~ s%[^/]*$%%;
+	    $url .= "forum,$forum_id,$page.html";
+	    return $url;
+    }
 
-sub topic_url_for_page {
-	my $self = shift;
-	my ($url, $topic_id, $page) = @_;
+    sub topic_url_for_page {
+	    my $self = shift;
+	    my ($url, $topic_id, $page) = @_;
 
-	$url =~ s%[^/]*$%%;
-	$url .= "topic,$topic_id,$page.html";
-	return $url;
-}
+	    $url =~ s%[^/]*$%%;
+	    $url .= "topic,$topic_id,$page.html";
+	    return $url;
+    }
 
 
-my $phpbb = WWW::phpBB::custom->new(
- base_url => 'http://foobar.foren-city.de',
- db_host => 'localhost',
- db_user => '****',
- db_passwd => '****',
- db_database => '****',
- db_prefix => 'phpbb_',
- verbose => 1,
- months => [qw(jan feb mär apr mai jun jul aug sep okt nov dez)],
- forum_user => '****',
- forum_passwd => '****',
- post_date_format => qr/(\d+)\s+(\w+)\s+(\d+)\s+(\d+):(\d+)/,
- post_date_pos => [qw(day_of_month month_name year hour minutes)],
- reg_date_format => qr/(\d+)\.(\d+)\.(\d+)/,
- reg_date_pos => [qw(day_of_month month year)],
- quote_string => "hat folgendes geschrieben",
- forum_link_regex => qr/forum,(\d+),/,
- topic_link_regex_p => qr/topic,.*#(\d+)/,
- topic_link_regex_t => qr/topic,(\d+),/,
- topic_link1 => "topic,%d.html",
- topic_link2 => "",
- profile_info => 0,
- alternative_page_number_regex_forum => qr/forum,\d+,(\d+)/,
- alternative_page_number_regex_topic => qr/topic,\d+,(\d+)/,
-);
+    my $phpbb = WWW::phpBB::custom->new(
+     base_url => 'http://foobar.foren-city.de',
+     db_host => 'localhost',
+     db_user => '****',
+     db_passwd => '****',
+     db_database => '****',
+     db_prefix => 'phpbb_',
+     verbose => 1,
+     months => [qw(jan feb mär apr mai jun jul aug sep okt nov dez)],
+     forum_user => '****',
+     forum_passwd => '****',
+     post_date_format => qr/(\d+)\s+(\w+)\s+(\d+)\s+(\d+):(\d+)/,
+     post_date_pos => [qw(day_of_month month_name year hour minutes)],
+     reg_date_format => qr/(\d+)\.(\d+)\.(\d+)/,
+     reg_date_pos => [qw(day_of_month month year)],
+     quote_string => "hat folgendes geschrieben",
+     forum_link_regex => qr/forum,(\d+),/,
+     topic_link_regex_p => qr/topic,.*#(\d+)/,
+     topic_link_regex_t => qr/topic,(\d+),/,
+     topic_link1 => "topic,%d.html",
+     topic_link2 => "",
+     profile_info => 0,
+     alternative_page_number_regex_forum => qr/forum,\d+,(\d+)/,
+     alternative_page_number_regex_topic => qr/topic,\d+,(\d+)/,
+    );
 
-$phpbb->empty_tables();
-$phpbb->forum_login();
-$phpbb->get_users();
-$phpbb->scrape_forum_common();
-$phpbb->forum_logout();
+    $phpbb->empty_tables();
+    $phpbb->forum_login();
+    $phpbb->get_users();
+    $phpbb->scrape_forum_common();
+    $phpbb->forum_logout();
 
 =head1 DESCRIPTION
 
