@@ -1,5 +1,10 @@
 Revision history for Perl extension WWW::phpBB.
 
+0.04  Tue Jan 18 20:40:09 2011
+	- exception handling in the parallelization code
+	- more configuration knobs
+	- better foren-city.de example
+
 0.03  Sun Jan 09 18:40:17 2011
 	- more parameters to control custom URL schemes
 	- got rid of the WWW::Mechanize wrapper

@@ -17,7 +17,7 @@ our @ISA = qw(Exporter);
 our %EXPORT_TAGS = ();
 our @EXPORT_OK = ();
 our @EXPORT = qw();
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 my $children; # number of spawned processes
 
 # defaults
@@ -34,12 +34,16 @@ my %default = (
     topic_link_regex_t => qr/viewtopic.*t=(\d+)/,
     topic_link1 => "viewtopic.php",
     topic_link2 => "t=%d&postorder=asc",
+    alternative_page_number_regex_forum => qr//,
+    alternative_page_number_regex_topic => qr//,
+    quote_string => "wrote",
     max_tries => 50,
     db_empty => [qw(users categories forums topics posts posts_text vote_desc vote_results)],
     bbcode_uid => '48d712e388',
     db_insert => 1,
     update_overwrite => 0,
     verbose => 0,
+    profile_info => 1,
     max_children => 1,
     smiles => {
 	icon_biggrin => ':D',
@@ -101,11 +105,15 @@ for (qw(
     topic_link_regex_t
     topic_link1
     topic_link2
+    alternative_page_number_regex_forum
+    alternative_page_number_regex_topic
+    quote_string
     max_tries
     db_empty
     db_insert
     max_children
     verbose
+    profile_info
 )) { $ok_field{$_}++ };
 
 sub AUTOLOAD {
@@ -142,10 +150,10 @@ sub new {
     #$self->{mmech}->add_header('Accept-Encoding' => 'gzip; deflate');
     for (1..$self->{max_tries}) {
 	$self->{mmech}->get($self->{base_url});
-	last if $self->{mmech}->success;
+	last if $self->{mmech}->success && $self->{mmech}->status == 200;
 	print "Error fetching the start page (try $_ out of $self->{max_tries})\n";
     }
-    croak "gave up...\n" unless $self->{mmech}->success;
+    croak "gave up...\n" unless $self->{mmech}->success && $self->{mmech}->status == 200;
 
     $self->{dbh} = DBI->connect("DBI:mysql:database=$self->{db_database};host=$self->{db_host};mysql_compression=$self->{db_compression}",
 	$self->{db_user}, $self->{db_passwd}, {AutoCommit => 1, RaiseError => 1});
@@ -175,7 +183,7 @@ sub forum_login {
 	$self->{mmech}->field('username', $self->{forum_user});
 	$self->{mmech}->field('password', $self->{forum_passwd});
 	$self->{mmech}->click();
-	if ($self->{mmech}->success) {
+	if ($self->{mmech}->success && $self->{mmech}->status == 200) {
       	    if ($self->{verbose}) {
 	  	print "\n";
             }
@@ -183,18 +191,26 @@ sub forum_login {
 	}
 	print "Error logging in (try $_ out of $self->{max_tries})\n";
     }
-    croak "gave up...\n" unless $self->{mmech}->success;
+    croak "gave up...\n" unless $self->{mmech}->success && $self->{mmech}->status == 200;
 }
 
 sub forum_logout {
     my $self = shift;
     return unless exists $self->{forum_user} && exists $self->{forum_passwd};
+    if ($self->{verbose}) {
+    	print "logging out...";
+    }
     for (1..$self->{max_tries}) {
 	$self->{mmech}->follow_link(url_regex => qr/logout/);
-	last if $self->{mmech}->success;
+	if ($self->{mmech}->success && $self->{mmech}->status == 200) {
+      	    if ($self->{verbose}) {
+	  	print "\n";
+            }
+	    last
+	}
 	print "Error logging out (try $_ out of $self->{max_tries})\n";
     }
-    croak "gave up...\n" unless $self->{mmech}->success;
+    croak "gave up...\n" unless $self->{mmech}->success && $self->{mmech}->status == 200;
     # reset the base_uri
     $self->{mmech}->get($self->{base_url})
 }
@@ -291,29 +307,36 @@ sub get_topics {
     bless $mech, "WWW::Mechanize";
     my $url = $self->compute_url("viewforum.php", "f=$forum_id");
     for (1..$self->{max_tries}) {
-	$mech->get($url);
-	last if $mech->success;
+        eval {
+	    $mech->get($url);
+	    1;
+	} or next;
+	last if $mech->success && $mech->status == 200;
 	print "Failed to enter forum_id $forum_id (try $_ out of $self->{max_tries})\n";
     }
-    return unless $mech->success;
+    return unless $mech->success && $mech->status == 200;
     # cycle through pages
-    my $pages = $self->number_of_pages($mech);
+    my $pages = $self->number_of_pages($mech, 'forum');
     # get just one page ?
     if (defined $page_number) {
 	if (-@$pages <= $page_number && $page_number < @$pages) {
 	    $pages = [ $$pages[$page_number] ];
 	} else { return }
     }
+    #print " pages: ", join(", ", @$pages);
     for ( @$pages ) {
 	my $url = $mech->uri;
-	$url =~ s/&start=\d+//;
-	$url .= "&start=$_";
+	$url = $self->forum_url_for_page($url, $forum_id, $_);
+	#print $url, "\n";
 	for (1..$self->{max_tries}) {
-	    $mech->get($url);
-	    last if $mech->success;
+	    eval {
+		$mech->get($url);
+		1;
+	    } or next;
+	    last if $mech->success && $mech->status == 200;
 	    print "Failed to enter a page of forum_id $forum_id (try $_ out of $self->{max_tries})\n";
 	}
-	next unless $mech->success;
+	next unless $mech->success && $mech->status == 200;
 	# extract topic info
 	my $parse;
 	$parse = HTML::TokeParser::Simple->new( \$mech->content );
@@ -419,10 +442,10 @@ sub get_users {
     my $url = $self->compute_url("memberlist.php", "");
     for (1..$self->{max_tries}) {
 	$mech->get($url);
-	last if $mech->success;
+	last if $mech->success && $mech->status == 200;
 	print "Failed to enter memberlist (try $_ out of $self->{max_tries})\n";
     }
-    return unless $mech->success;
+    return unless $mech->success && $mech->status == 200;
     # cycle through pages
     my $pages = $self->number_of_pages($mech);
     # get just one page ?
@@ -433,14 +456,15 @@ sub get_users {
     }
     for ( @$pages ) {
 	my $url = $mech->uri;
-	$url =~ s/&start=\d+//;
-	$url .= "&start=$_";
+	$url =~ s/&$//;
+	$url = $self->memberlist_url_for_page($url, $_);
+
 	for (1..$self->{max_tries}) {
 	    $mech->get($url);
-	    last if $mech->success;
+	    last if $mech->success && $mech->status == 200;
 	    print "Failed to enter a page of the memberlist (try $_ out of $self->{max_tries})\n";
 	}
-	next unless $mech->success;
+	next unless $mech->success && $mech->status == 200;
 	# extract memberlist info
 	my $parse;
 	$parse = HTML::TokeParser::Simple->new( \$mech->content );
@@ -451,10 +475,9 @@ sub get_users {
 	  && $token->get_attr('class') eq 'forumline';
 	$token = $parse->get_token until $token->is_end_tag('tr');
 	while ($token = $parse->get_token) {
-	    last if $token->is_end_tag('table');
+	    #print "|>", $parse->peek(7), "<|\n";
 	    next unless $token->is_start_tag('tr');
 	    $token = $parse->get_token until $token->is_start_tag('td');
-	    last unless $token->get_attr('class') =~ /row/;
 	    my %row;
 	    # various default fields
 	    $row{user_sig_bbcode_uid} = $self->{bbcode_uid};
@@ -467,25 +490,29 @@ sub get_users {
 	    $row{user_notify_pm} = 1;
 	    $row{user_popup_pm} = 1;
 	    # user_id
-	    $token = $parse->get_token until $token->is_start_tag('a')
-	      && $token->get_attr('href') =~ /viewprofile.*u=(\d+)(\D|$)/;
+	    $token = $parse->get_token until !defined $token || ($token->is_start_tag('a') && $token->get_attr('href') =~ /viewprofile.*u=(\d+)(\D|$)/);
+	    last if !defined $token;
 	    $row{user_id} = $1;
 	    # username
 	    $token = $parse->get_token until $token->is_text
 	      && $token->as_is =~ /\S/;
 	    $row{username} = $token->as_is;
+	    #print $row{username}, "\n";
 	    # user_email
 	    $token = $parse->get_token until $token->is_start_tag('td');
 	    while ($token = $parse->get_token) {
 		last if $token->is_end_tag('td');
-		if ($token->is_start_tag('a') && $token->as_is =~ /mailto:(.+)\"/) {
+		if ($token->is_start_tag('a') && $token->as_is =~ /mailto:([^"]+)\"/) {
 		    $row{user_email} = $1;
 		}
 	    }
 	    # user_from
 	    $token = $parse->get_token until $token->is_start_tag('td');
+	    my $td_count = 0;
 	    while ($token = $parse->get_token) {
-		last if $token->is_start_tag('td') && $token->get_attr('class') =~ /row/;
+		$td_count++ if $token->is_start_tag('td');
+		$td_count-- if $token->is_end_tag('td');
+		last if $td_count < 0;
 		if ($token->is_text
 		    && $token->as_is !~ /^(&nbsp;)+$/
 		    && $token->as_is =~ /\S/) {
@@ -510,91 +537,102 @@ sub get_users {
 			$row{user_website} = $token->get_attr('href');
 		    }
 	    }
+	    #while( my ($k, $v) = each %row ) {
+	     #print "$k : $v\n";
+	    #}
+	    #print "\n";
 
-	    # get profile info
-	    # make a copy of the $mech object in order to get the profile page
-	    my $p_mech = {%{$mech}};
-	    bless $p_mech, "WWW::Mechanize";
-	    my $urlp = $self->compute_url("profile.php", "mode=viewprofile&u=$row{user_id}");
-	    for (1..$self->{max_tries}) {
-		$p_mech->get($urlp);
-		last if $p_mech->success;
-		print "Failed to enter profile (try $_ out of $self->{max_tries})\n";
-	    }
-	    next unless $p_mech->success;
-	    my $p_parse;
-	    $p_parse = HTML::TokeParser::Simple->new( \$p_mech->content );
-	    $p_parse->unbroken_text( 1 );
-	    my $p_token;
-	    $p_token = $p_parse->get_token;
-	    $p_token = $p_parse->get_token until $p_token->get_attr('class')
-	      eq 'forumline';
-	    $p_token = $p_parse->get_token until $p_token->get_attr('class')
-	      =~ /row/ && $p_token->is_start_tag('td');
-	    # user_avatar
-	    while ($p_token = $p_parse->get_token) {
-		last if $p_token->is_end_tag('td');
-		if ($p_token->is_tag('img')) {
-		    $row{user_avatar} = $p_token->get_attr('src');
-		    (my $b_url = $p_mech->uri) =~ s%^(.*/).*$%$1%;
-		    $row{user_avatar} = $b_url . $row{user_avatar}
-		    if $row{user_avatar} !~ m%^http://%;
-		    $row{user_avatar_type} = 2;
-		    last;
+	    if($self->{profile_info}) {
+		# get profile info
+		# make a copy of the $mech object in order to get the profile page
+		my $p_mech = {%{$mech}};
+		bless $p_mech, "WWW::Mechanize";
+		my $urlp = $self->compute_url("profile.php", "mode=viewprofile&u=$row{user_id}");
+		for (1..$self->{max_tries}) {
+		    $p_mech->get($urlp);
+		    last if $p_mech->success && $p_mech->status == 200;
+		    print "Failed to enter profile (try $_ out of $self->{max_tries})\n";
 		}
-	    }
-	    # user_occ
-	    for (1..5) {
+		next unless $p_mech->success && $p_mech->status == 200;
+		my $p_parse;
+		$p_parse = HTML::TokeParser::Simple->new( \$p_mech->content );
+		$p_parse->unbroken_text( 1 );
+		my $p_token;
 		$p_token = $p_parse->get_token;
-		$p_token = $p_parse->get_token until $p_token->is_start_tag('tr');
+		$p_token = $p_parse->get_token until $p_token->get_attr('class')
+		  eq 'forumline';
+		$p_token = $p_parse->get_token until $p_token->get_attr('class')
+		  =~ /row/ && $p_token->is_start_tag('td');
+		# user_avatar
+		while ($p_token = $p_parse->get_token) {
+		    last if $p_token->is_end_tag('td');
+		    if ($p_token->is_tag('img')) {
+			$row{user_avatar} = $p_token->get_attr('src');
+			(my $b_url = $p_mech->uri) =~ s%^(.*/).*$%$1%;
+			$row{user_avatar} = $b_url . $row{user_avatar}
+			if $row{user_avatar} !~ m%^http://%;
+			$row{user_avatar_type} = 2;
+			last;
+		    }
+		}
+		#print "$row{username} - $row{user_avatar}\n";
+		# user_occ
+		for (1..5) {
+		    $p_token = $p_parse->get_token;
+		    $p_token = $p_parse->get_token until $p_token->is_start_tag('tr');
+		}
+		$p_token = $p_parse->get_token until $p_token->is_end_tag('td');
+		$p_token = $p_parse->get_token until $p_token->is_text
+		  && $p_token->as_is !~ /^\s+$|^(&nbsp;)+$/
+		  || $p_token->is_end_tag('tr');
+		$row{user_occ} = $p_token->as_is if $p_token->is_text;
+		# user_interests
+		$p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
+		$p_token = $p_parse->get_token until $p_token->is_end_tag('td');
+		$p_token = $p_parse->get_token until $p_token->is_text
+		  && $p_token->as_is !~ /^\s+$|^(&nbsp;)+$/
+		  || $p_token->is_end_tag('tr');
+		$row{user_interests} = $p_token->as_is if $p_token->is_text;
+		# user_msnm
+		$p_token = $p_parse->get_token until $p_token->is_start_tag('table');
+		for (1..3) {
+		    $p_token = $p_parse->get_token;
+		    $p_token = $p_parse->get_token until $p_token->is_start_tag('tr');
+		}
+		$p_token = $p_parse->get_token until $p_token->is_end_tag('td');
+		$p_token = $p_parse->get_token until $p_token->is_text
+		  && $p_token->as_is !~ /^\s+$|^(&nbsp;)+$/
+		  || $p_token->is_end_tag('tr');
+		$row{user_msnm} = $p_token->as_is if $p_token->is_text;
+		# user_yim
+		$p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
+		$p_token = $p_parse->get_token until $p_token->is_end_tag('td');
+		$p_token = $p_parse->get_token until $p_token->is_start_tag('a')
+		  && $p_token->get_attr('href') =~ /target=(.+?)(&|$)/
+		  || $p_token->is_end_tag('tr');
+		$row{user_yim} = $1 if $p_token->is_start_tag('a');
+		# user_aim
+		$p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
+		$p_token = $p_parse->get_token until $p_token->is_end_tag('td');
+		$p_token = $p_parse->get_token until $p_token->is_start_tag('a')
+		  && $p_token->get_attr('href') =~ /screenname=(.+?)(&|$)/
+		  || $p_token->is_end_tag('tr');
+		$row{user_aim} = $1 if $p_token->is_start_tag('a');
+		# user_icq
+		$p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
+		$p_token = $p_parse->get_token until $p_token->is_end_tag('td');
+		$p_token = $p_parse->get_token until $p_token->is_start_tag('a')
+		  && $p_token->get_attr('href') =~ /to=(.+?)(&|$)/
+		  || $p_token->is_end_tag('tr');
+		$row{user_icq} = $1 if $p_token->is_start_tag('a');
 	    }
-	    $p_token = $p_parse->get_token until $p_token->is_end_tag('td');
-	    $p_token = $p_parse->get_token until $p_token->is_text
-	      && $p_token->as_is !~ /^\s+$|^(&nbsp;)+$/
-	      || $p_token->is_end_tag('tr');
-	    $row{user_occ} = $p_token->as_is if $p_token->is_text;
-	    # user_interests
-	    $p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
-	    $p_token = $p_parse->get_token until $p_token->is_end_tag('td');
-	    $p_token = $p_parse->get_token until $p_token->is_text
-	      && $p_token->as_is !~ /^\s+$|^(&nbsp;)+$/
-	      || $p_token->is_end_tag('tr');
-	    $row{user_interests} = $p_token->as_is if $p_token->is_text;
-	    # user_msnm
-	    $p_token = $p_parse->get_token until $p_token->is_start_tag('table');
-	    for (1..3) {
-		$p_token = $p_parse->get_token;
-		$p_token = $p_parse->get_token until $p_token->is_start_tag('tr');
-	    }
-	    $p_token = $p_parse->get_token until $p_token->is_end_tag('td');
-	    $p_token = $p_parse->get_token until $p_token->is_text
-	      && $p_token->as_is !~ /^\s+$|^(&nbsp;)+$/
-	      || $p_token->is_end_tag('tr');
-	    $row{user_msnm} = $p_token->as_is if $p_token->is_text;
-	    # user_yim
-	    $p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
-	    $p_token = $p_parse->get_token until $p_token->is_end_tag('td');
-	    $p_token = $p_parse->get_token until $p_token->is_start_tag('a')
-	      && $p_token->get_attr('href') =~ /target=(.+?)(&|$)/
-	      || $p_token->is_end_tag('tr');
-	    $row{user_yim} = $1 if $p_token->is_start_tag('a');
-	    # user_aim
-	    $p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
-	    $p_token = $p_parse->get_token until $p_token->is_end_tag('td');
-	    $p_token = $p_parse->get_token until $p_token->is_start_tag('a')
-	      && $p_token->get_attr('href') =~ /screenname=(.+?)(&|$)/
-	      || $p_token->is_end_tag('tr');
-	    $row{user_aim} = $1 if $p_token->is_start_tag('a');
-	    # user_icq
-	    $p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
-	    $p_token = $p_parse->get_token until $p_token->is_end_tag('td');
-	    $p_token = $p_parse->get_token until $p_token->is_start_tag('a')
-	      && $p_token->get_attr('href') =~ /to=(.+?)(&|$)/
-	      || $p_token->is_end_tag('tr');
-	    $row{user_icq} = $1 if $p_token->is_start_tag('a');
+	    #while( my ($k, $v) = each %row ) {
+	     #print "$k : $v\n";
+	    #}
+	    #print "\n";
 
 	    push @{$self->{users}}, \%row;
-	    if ($self->{db_insert} && ++$rows == $self->{max_rows}) {
+	    if ($self->{db_insert} && ++$rows >= $self->{max_rows}) {
 		$self->insert_array($self->{users}, "users");
 		@{$self->{users}} = ();
 	    }
@@ -616,6 +654,9 @@ sub get_posts {
     my ($topic_id, $page_number) = @_;
     my $success;
     my ($url, $url1, $url2);
+    if ($self->{verbose}) {
+    	print "getting the posts from topic #$topic_id\n";
+    }
     # make a copy of the $mech object
     my $mech = {%{$self->{mmech}}};
     bless $mech, "WWW::Mechanize";
@@ -625,13 +666,16 @@ sub get_posts {
     $url2 = sprintf($url2, $topic_id) if $url2 =~ m/%d/;
     $url = $self->compute_url($url1, $url2);
     for (1..$self->{max_tries}) {
-	$mech->get($url);
-	last if $mech->success;
+        eval {
+	    $mech->get($url);
+	    1;
+	} or next;
+	last if $mech->success && $mech->status == 200;
 	print "Failed to enter topic_id $topic_id (try $_ out of $self->{max_tries})\n";
     }
-    return unless $mech->success;
+    return unless $mech->success && $mech->status == 200;
     # cycle through pages
-    my $pages = $self->number_of_pages($mech);
+    my $pages = $self->number_of_pages($mech, 'topic');
     # get just one page ?
     if (defined $page_number) {
 	if (-@$pages <= $page_number && $page_number < @$pages) {
@@ -640,14 +684,16 @@ sub get_posts {
     }
     for ( @$pages ) {
 	my $url = $mech->uri;
-	$url =~ s/&start=\d+//;
-	$url .= "&start=$_";
+	$url = $self->topic_url_for_page($url, $topic_id, $_);
 	for (1..$self->{max_tries}) {
-	    $mech->get($url);
-	    last if $mech->success;
+	    eval {
+		$mech->get($url);
+		1;
+	    } or next;
+	    last if $mech->success && $mech->status == 200;
 	    print "Failed to enter a page of topic_id $topic_id (try $_ out of $self->{max_tries})\n";
 	}
-	next unless $mech->success;
+	next unless $mech->success && $mech->status == 200;
 	$self->get_posts_from_page($mech, $topic_id, $_);
     }
     # get last_post_id only if scraping the full topic or just the last page
@@ -1118,20 +1164,64 @@ sub insert_array {
 # returns an array ref with page numbers
 sub number_of_pages {
     my $self = shift;
-    my ($mech) = @_;
+    my ($mech, $type) = @_;
     my %page;
     $page{0} = 1;
     my $success;
     (my $url_ident = $mech->uri) =~ s%.*/(.*?)\?.*%$1%;
-    $success = $mech->find_all_links(url_regex => qr/^${url_ident}.*start=/);
-    if ($success) {
+    $success = $mech->find_all_links(url_regex => qr/^${url_ident}.*start=\d+/);
+    if (@$success) {
 	for(@$success) {
 	    $_->url =~ /start=(\d+)(\D|$)/;
 	    $page{$1} = 1;
+	    #print $_->url . " : '$1'\n"
+	}
+    } elsif($self->{alternative_page_number_regex_forum} ne qr// && $type eq 'forum') {
+        $success = $mech->find_all_links(url_regex => $self->{alternative_page_number_regex_forum});
+	if (@$success) {
+	    for(@$success) {
+		$_->url =~ $self->{alternative_page_number_regex_forum};
+		$page{$1} = 1;
+	    }
+	}
+    } elsif($self->{alternative_page_number_regex_topic} ne qr// && $type eq 'topic') {
+	$success = $mech->find_all_links(url_regex => $self->{alternative_page_number_regex_topic});
+	if (@$success) {
+	    for(@$success) {
+		$_->url =~ $self->{alternative_page_number_regex_topic};
+		$page{$1} = 1;
+	    }
 	}
     }
     # return array ref
     [sort {$a <=> $b} keys %page];
+}
+
+sub forum_url_for_page {
+	my $self = shift;
+	my ($url, $forum_id, $page) = @_;
+
+	$url =~ s/&start=\d+//;
+	$url .= "&start=$page";
+	return $url;
+}
+
+sub topic_url_for_page {
+	my $self = shift;
+	my ($url, $topic_id, $page) = @_;
+
+	$url =~ s/&start=\d+//;
+	$url .= "&start=$page";
+	return $url;
+}
+
+sub memberlist_url_for_page {
+	my $self = shift;
+	my ($url, $page) = @_;
+
+	$url =~ s/&start=\d+//;
+	$url .= "&start=$page";
+	return $url;
 }
 
 # $_[0]=string_ref, $_[1]=$prepare_html
@@ -1175,11 +1265,22 @@ sub html_to_bbcode {
 	} elsif ($token->is_end_tag('span')) {
 	    $text .= pop @close_tag;
 	} elsif ($token->is_start_tag('table')) { # quote or code
+	    #print "|>", $parse->peek(7), "<|\n";
 	    $token = $parse->get_token until $token->is_start_tag('td');
-	    $token = $parse->get_token until $token->is_text
-	      && $token->as_is =~ /^(.*?) ?\S+:$/s;
-	    my $author = $1;
+	    #$token = $parse->get_token until $token->is_text && $token->as_is =~ /^(.*?) ?$self->{quote_string}:$/s;
+	    my $author = '';
+	    while($token = $parse->get_token) {
+	    	if($token->is_text && $token->as_is =~ /^(.*?) ?$self->{quote_string}:$/s) {
+		    #print $token->as_is, "\n";
+		    $author = $1;
+		    last;
+		} elsif($token->is_end_tag('td')) {
+		    last;
+		}
+	    }
+	    #print $author, "\n";
 	    $token = $parse->get_token until $token->is_start_tag('td');
+	    #print "test\n";
 	    if ($token->get_attr('class') eq 'quote') {
 		if ($author eq '') {
 		    $text .= "[quote:$self->{bbcode_uid}]";
@@ -1289,9 +1390,10 @@ sub parse_date {
     # month
     $date_vars{mon} = $date_vars{month} - 1 if exists $date_vars{month};
     # get rid of warnings
-    for (qw(seconds minutes hour day_of_month mon year)) {
+    for (qw(seconds minutes day_of_month mon year)) {
 	$date_vars{$_} = 0 unless exists $date_vars{$_};
     }
+    $date_vars{hour} = 12 unless exists $date_vars{hour};
     # return timestamp
     timelocal( $date_vars{seconds}, $date_vars{minutes}, $date_vars{hour},
 	$date_vars{day_of_month}, $date_vars{mon}, $date_vars{year} );
@@ -1397,7 +1499,7 @@ sub scrape_forum_common {
     }
     for (@{$self->{forums}}) {
     	if ($self->{verbose}) {
-      	    print "getting forum with id ", $_->{forum_id}, " ...";
+      	    print "getting the topics from forum #", $_->{forum_id}, "\n";
     	}
     	$self->get_topics( $_->{forum_id} );
     	for (@{$self->{topics}}) {
@@ -1409,22 +1511,29 @@ sub scrape_forum_common {
 	    );
     	}
     	@{$self->{topics}} = ();
-    	if ($self->{verbose}) {
-      	    print "\n";
-    	}
     }
-    wait for 1..$children;
+    #wait for 1..$children;
+    1 while waitpid(-1, WNOHANG)>0; # reaps childs
     $self->update_forum_first_last_post($_->{forum_id}) for @{$self->{forums}};
 }
 
 sub update_forum_common {
     my $self = shift;
     $self->{db_insert} = 0;
+    if ($self->{verbose}) {
+    	print "getting categories and forums...";
+    }
     $self->get_categories_and_forums();
+    if ($self->{verbose}) {
+    	print "\n";
+    }
     $self->insert_array($self->{categories}, 'categories');
     $self->insert_array($self->{forums}, 'forums');
     $self->get_last_timestamp();
     for (@{$self->{forums}}) {
+	if ($self->{verbose}) {
+	    print "updating topics from forum #", $_->{forum_id}, "\n";
+	}
 	$self->update_topics($_->{forum_id});
     	for (@{$self->{topics}}) {
     	    $self->update_posts($_->{topic_id});
@@ -1475,37 +1584,77 @@ WWW::phpBB - phpBB2 forum scraper
         forum_passwd => 'lfdiugyh',
     );
 
-    # another forum from foren-city.de with a custom URL scheme
-    my $phpbb = WWW::phpBB->new(
-	base_url => 'http://someforum.foren-city.de',
-	db_host => 'localhost',
-	db_user => 'stefan',
-	db_passwd => 'somepass',
-	db_database => 'phpbbtest',
-	db_prefix => 'phpbb_',
-	verbose => 1,
-	forum_user => 'someuser',
-	forum_passwd => 'someotherpass',
-	post_date_format => qr/(\d+)\s+(\w+)\s+(\d+)\s+(\d+):(\d+)/,
-	post_date_pos => [qw(day_of_month month_name year hour minutes)],
-	forum_link_regex => qr/forum,(\d+),/,
-	topic_link_regex_p => qr/topic,.*#(\d+)/,
-	topic_link_regex_t => qr/topic,(\d+),/,
-	topic_link1 => "topic,%d.html",
-	topic_link2 => "",
-    );
-
-    # we're logging in just to get the memberlist
+    # login to access the private memberlist and some private forums
     $phpbb->empty_tables();
     $phpbb->forum_login();
     $phpbb->get_users();
-    $phpbb->forum_logout();
     $phpbb->scrape_forum_common();
+    $phpbb->forum_logout();
 
     # update an already scraped forum, maybe as a daily cron job
     # $phpbb->update_overwrite(1); # don't try to keep modified data
     $phpbb->update_users();
     $phpbb->update_forum_common();
+
+=head1 FANCY EXAMPLE
+
+use WWW::phpBB;
+
+# custom subclass
+package WWW::phpBB::custom;
+use base 'WWW::phpBB';
+
+# override some methods
+sub forum_url_for_page {
+	my $self = shift;
+	my ($url, $forum_id, $page) = @_;
+
+	$url =~ s%[^/]*$%%;
+	$url .= "forum,$forum_id,$page.html";
+	return $url;
+}
+
+sub topic_url_for_page {
+	my $self = shift;
+	my ($url, $topic_id, $page) = @_;
+
+	$url =~ s%[^/]*$%%;
+	$url .= "topic,$topic_id,$page.html";
+	return $url;
+}
+
+
+my $phpbb = WWW::phpBB::custom->new(
+ base_url => 'http://foobar.foren-city.de',
+ db_host => 'localhost',
+ db_user => '****',
+ db_passwd => '****',
+ db_database => '****',
+ db_prefix => 'phpbb_',
+ verbose => 1,
+ months => [qw(jan feb mär apr mai jun jul aug sep okt nov dez)],
+ forum_user => '****',
+ forum_passwd => '****',
+ post_date_format => qr/(\d+)\s+(\w+)\s+(\d+)\s+(\d+):(\d+)/,
+ post_date_pos => [qw(day_of_month month_name year hour minutes)],
+ reg_date_format => qr/(\d+)\.(\d+)\.(\d+)/,
+ reg_date_pos => [qw(day_of_month month year)],
+ quote_string => "hat folgendes geschrieben",
+ forum_link_regex => qr/forum,(\d+),/,
+ topic_link_regex_p => qr/topic,.*#(\d+)/,
+ topic_link_regex_t => qr/topic,(\d+),/,
+ topic_link1 => "topic,%d.html",
+ topic_link2 => "",
+ profile_info => 0,
+ alternative_page_number_regex_forum => qr/forum,\d+,(\d+)/,
+ alternative_page_number_regex_topic => qr/topic,\d+,(\d+)/,
+);
+
+$phpbb->empty_tables();
+$phpbb->forum_login();
+$phpbb->get_users();
+$phpbb->scrape_forum_common();
+$phpbb->forum_logout();
 
 =head1 DESCRIPTION
 
