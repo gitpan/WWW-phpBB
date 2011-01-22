@@ -17,7 +17,7 @@ our @ISA = qw(Exporter);
 our %EXPORT_TAGS = ();
 our @EXPORT_OK = ();
 our @EXPORT = qw();
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 my $children; # number of spawned processes
 
 # defaults
@@ -38,7 +38,7 @@ my %default = (
     alternative_page_number_regex_topic => qr//,
     quote_string => "wrote",
     max_tries => 50,
-    db_empty => [qw(users categories forums topics posts posts_text vote_desc vote_results)],
+    db_empty => [qw(users categories forums topics posts posts_text vote_desc vote_results groups user_group)],
     bbcode_uid => '48d712e388',
     db_insert => 1,
     update_overwrite => 0,
@@ -71,7 +71,7 @@ my %default = (
     },
 );
 # mysql tables as arrays of hashes
-for (qw(categories forums topics users posts posts_text vote_desc vote_results)) {
+for (qw(categories forums topics users posts posts_text vote_desc vote_results groups user_group)) {
     $default{$_} = [];
 }
 
@@ -436,6 +436,8 @@ sub get_users {
     my ($page_number) = @_;
     my $success;
     my $rows;
+
+    $self->get_new_admin();
     # make a copy of the $mech object
     my $mech = {%{$self->{mmech}}};
     bless $mech, "WWW::Mechanize";
@@ -497,6 +499,7 @@ sub get_users {
 	    $token = $parse->get_token until $token->is_text
 	      && $token->as_is =~ /\S/;
 	    $row{username} = $token->as_is;
+        die "the destination forum's admin has the same username as one user from the scraped forum ($row{username})! aborting...\n" if $row{username} eq $self->{new_admin_username};
 	    #print $row{username}, "\n";
 	    # user_email
 	    $token = $parse->get_token until $token->is_start_tag('td');
@@ -643,6 +646,7 @@ sub get_users {
 	$self->insert_array($self->{users}, "users");
 	@{$self->{users}} = ();
     }
+    $self->create_groups;
     if ($self->{verbose}) {
     	print "\n";
     }
@@ -945,6 +949,7 @@ sub update_users {
 	$page--;
     }
     $self->insert_array(\@new, 'users');
+    $self->create_groups;
 }
 
 sub update_topics {
@@ -1134,6 +1139,10 @@ sub empty_tables {
 	    $self->{dbh}->do("UPDATE $self->{db_prefix}" . "users SET user_id=1 WHERE user_id=2")
 	      unless $sth->fetch;
 	    $self->{dbh}->do("DELETE FROM $self->{db_prefix}" . "users WHERE user_id!=1 AND user_id!=-1");
+	} elsif($_ eq 'groups') {
+	    $self->{dbh}->do("DELETE FROM $self->{db_prefix}" . "groups WHERE group_id>2");
+	} elsif($_ eq 'user_group') {
+	    $self->{dbh}->do("DELETE FROM $self->{db_prefix}" . "user_group WHERE group_id>2");
 	} else {
 	    $self->{dbh}->do("DELETE FROM " . $self->{db_prefix} . $_);
 	}
@@ -1433,6 +1442,29 @@ sub get_last_timestamp {
     $sth->execute;
     $sth->bind_columns(\$self->{last_timestamp});
     $sth->fetch;
+}
+
+sub get_new_admin {
+    my $self = shift;
+    my $sth = $self->{dbh}->prepare("SELECT user_id, username FROM $self->{db_prefix}" . "users ORDER BY user_id DESC LIMIT 1");
+    $sth->execute;
+    $sth->bind_columns(\$self->{new_admin_id}, \$self->{new_admin_username});
+    $sth->fetch;
+}
+
+sub create_groups {
+    my $self = shift;
+    my $sth = $self->{dbh}->prepare("SELECT user_id FROM $self->{db_prefix}users WHERE user_id NOT IN ( SELECT user_id FROM $self->{db_prefix}user_group )");
+    $sth->execute;
+    my @row;
+    while(@row = $sth->fetchrow_array) {
+        #print "$row[0]\n";
+        my $gsth = $self->{dbh}->prepare("INSERT INTO $self->{db_prefix}groups SET group_description='Personal User'");
+        $gsth->execute;
+        my $group_id = $gsth->{mysql_insertid};
+        my $ugsth = $self->{dbh}->prepare("INSERT INTO $self->{db_prefix}user_group SET group_id=?, user_id=?, user_pending=0");
+        $ugsth->execute($group_id, $row[0]);
+    }
 }
 
 sub compute_url {

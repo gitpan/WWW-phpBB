@@ -1,5 +1,10 @@
 Revision history for Perl extension WWW::phpBB.
 
+
+0.06  Tue Jan 22 01:27:11 2011
+	- create groups for the scraped users
+	- check that there's no name clash with the destination forum's admin
+
 0.05  Tue Jan 18 22:13:50 2011
 	- fix pod
 
