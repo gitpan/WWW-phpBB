@@ -17,7 +17,7 @@ our @ISA = qw(Exporter);
 our %EXPORT_TAGS = ();
 our @EXPORT_OK = ();
 our @EXPORT = qw();
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 my $children; # number of spawned processes
 
 # defaults
@@ -25,9 +25,9 @@ my %default = (
     db_compression => 0,
     max_rows => 60,
     months => [qw(jan feb mar apr may jun jul aug sep oct nov dec)],
-    post_date_format => qr/(\w+)\s+(\d+),\s+(\d+)\s+(\d+):(\d+)\s+(\w\w)/,
+    post_date_format => qr/(\w+)\s+(\d+),\s+(\d+)\s+(\d+):(\d+)\s+(\w\w)/i,
     post_date_pos => [qw(month_name day_of_month year hour minutes am_pm)],
-    reg_date_format => qr/(\d+)\s+(\w+)\s+(\d+)/,
+    reg_date_format => qr/(\d+)\s+(\w+)\s+(\d+)/i,
     reg_date_pos => [qw(day_of_month month_name year)],
     forum_link_regex => qr/f=(\d+)/,
     topic_link_regex_p => qr/viewtopic.*p=(\d+)/,
@@ -1180,27 +1180,35 @@ sub number_of_pages {
     (my $url_ident = $mech->uri) =~ s%.*/(.*?)\?.*%$1%;
     $success = $mech->find_all_links(url_regex => qr/^${url_ident}.*start=\d+/);
     if (@$success) {
-	for(@$success) {
-	    $_->url =~ /start=(\d+)(\D|$)/;
-	    $page{$1} = 1;
-	    #print $_->url . " : '$1'\n"
-	}
+        for(@$success) {
+            $_->url =~ /start=(\d+)(\D|$)/;
+            $page{$1} = 1;
+            #print $_->url . " : '$1'\n"
+        }
     } elsif($self->{alternative_page_number_regex_forum} ne qr// && $type eq 'forum') {
         $success = $mech->find_all_links(url_regex => $self->{alternative_page_number_regex_forum});
-	if (@$success) {
-	    for(@$success) {
-		$_->url =~ $self->{alternative_page_number_regex_forum};
-		$page{$1} = 1;
-	    }
-	}
+        if (@$success) {
+            for(@$success) {
+            $_->url =~ $self->{alternative_page_number_regex_forum};
+            $page{$1} = 1;
+            }
+        }
     } elsif($self->{alternative_page_number_regex_topic} ne qr// && $type eq 'topic') {
-	$success = $mech->find_all_links(url_regex => $self->{alternative_page_number_regex_topic});
-	if (@$success) {
-	    for(@$success) {
-		$_->url =~ $self->{alternative_page_number_regex_topic};
-		$page{$1} = 1;
-	    }
-	}
+        $success = $mech->find_all_links(url_regex => $self->{alternative_page_number_regex_topic});
+        if (@$success) {
+            for(@$success) {
+            $_->url =~ $self->{alternative_page_number_regex_topic};
+            $page{$1} = 1;
+            }
+        }
+    }
+    # fill in missing pages
+    my @page_keys = sort {$a <=> $b} keys %page;
+    if (scalar(@page_keys) > 1) {
+        my $per_page = $page_keys[1] - $page_keys[0];
+        for(my $p=$page_keys[0]; $p<=$page_keys[-1]; $p+=$per_page) {
+            $page{$p} = 1;
+        }
     }
     # return array ref
     [sort {$a <=> $b} keys %page];
@@ -1375,8 +1383,8 @@ sub parse_date {
     }
 
     $_ = $str;
-    return 0 unless /$date_format/;
-    my @res = /$date_format/;
+    return 0 unless /$date_format/i;
+    my @res = /$date_format/i;
     for (my $i = 0; $i < @res; $i++) {
 	$date_vars{$$date_pos[$i]} = $res[$i];
     }

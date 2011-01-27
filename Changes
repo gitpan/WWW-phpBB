@@ -1,5 +1,7 @@
 Revision history for Perl extension WWW::phpBB.
 
+0.07  Tue Jan 27 20:12:10 2011
+	- fix page navigation when not all the pages are shown in the menu
 
 0.06  Tue Jan 22 01:27:11 2011
 	- create groups for the scraped users
