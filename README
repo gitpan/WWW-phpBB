@@ -15,13 +15,16 @@ request a new random password from the new installation site and continue using
 the forum. The current implementation lacks search support, but this can be fixed
 by converting the forum to phpBB3 or SMF. The "mforum" script is supported.
 
+NOTES
+
+- if you have admin access on the remote forum make sure that emailing through the forum interface is disabled
+- on the local forum you might want to enable remote avatars
+
 INSTALLATION
 
 To install this module type the following:
 
    perl Makefile.PL
-   make
-   make test
    make install
 
 DEPENDENCIES

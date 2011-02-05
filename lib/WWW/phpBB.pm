@@ -17,7 +17,7 @@ our @ISA = qw(Exporter);
 our %EXPORT_TAGS = ();
 our @EXPORT_OK = ();
 our @EXPORT = qw();
-our $VERSION = '0.07';
+our $VERSION = '0.08';
 my $children; # number of spawned processes
 
 # defaults
@@ -44,6 +44,8 @@ my %default = (
     update_overwrite => 0,
     verbose => 0,
     profile_info => 1,
+    profile_string_occupation => "occupation",
+    profile_string_msn => "msn messenger",
     max_children => 1,
     smiles => {
 	icon_biggrin => ':D',
@@ -431,7 +433,7 @@ sub get_topics {
 sub get_users {
     my $self = shift;
     if ($self->{verbose}) {
-    	print "getting users...";
+    	print "getting users...\n";
     }
     my ($page_number) = @_;
     my $success;
@@ -546,88 +548,96 @@ sub get_users {
 	    #print "\n";
 
 	    if($self->{profile_info}) {
-		# get profile info
-		# make a copy of the $mech object in order to get the profile page
-		my $p_mech = {%{$mech}};
-		bless $p_mech, "WWW::Mechanize";
-		my $urlp = $self->compute_url("profile.php", "mode=viewprofile&u=$row{user_id}");
-		for (1..$self->{max_tries}) {
-		    $p_mech->get($urlp);
-		    last if $p_mech->success && $p_mech->status == 200;
-		    print "Failed to enter profile (try $_ out of $self->{max_tries})\n";
-		}
-		next unless $p_mech->success && $p_mech->status == 200;
-		my $p_parse;
-		$p_parse = HTML::TokeParser::Simple->new( \$p_mech->content );
-		$p_parse->unbroken_text( 1 );
-		my $p_token;
-		$p_token = $p_parse->get_token;
-		$p_token = $p_parse->get_token until $p_token->get_attr('class')
-		  eq 'forumline';
-		$p_token = $p_parse->get_token until $p_token->get_attr('class')
-		  =~ /row/ && $p_token->is_start_tag('td');
-		# user_avatar
-		while ($p_token = $p_parse->get_token) {
-		    last if $p_token->is_end_tag('td');
-		    if ($p_token->is_tag('img')) {
-			$row{user_avatar} = $p_token->get_attr('src');
-			(my $b_url = $p_mech->uri) =~ s%^(.*/).*$%$1%;
-			$row{user_avatar} = $b_url . $row{user_avatar}
-			if $row{user_avatar} !~ m%^http://%;
-			$row{user_avatar_type} = 2;
-			last;
-		    }
-		}
-		#print "$row{username} - $row{user_avatar}\n";
-		# user_occ
-		for (1..5) {
-		    $p_token = $p_parse->get_token;
-		    $p_token = $p_parse->get_token until $p_token->is_start_tag('tr');
-		}
-		$p_token = $p_parse->get_token until $p_token->is_end_tag('td');
-		$p_token = $p_parse->get_token until $p_token->is_text
-		  && $p_token->as_is !~ /^\s+$|^(&nbsp;)+$/
-		  || $p_token->is_end_tag('tr');
-		$row{user_occ} = $p_token->as_is if $p_token->is_text;
-		# user_interests
-		$p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
-		$p_token = $p_parse->get_token until $p_token->is_end_tag('td');
-		$p_token = $p_parse->get_token until $p_token->is_text
-		  && $p_token->as_is !~ /^\s+$|^(&nbsp;)+$/
-		  || $p_token->is_end_tag('tr');
-		$row{user_interests} = $p_token->as_is if $p_token->is_text;
-		# user_msnm
-		$p_token = $p_parse->get_token until $p_token->is_start_tag('table');
-		for (1..3) {
-		    $p_token = $p_parse->get_token;
-		    $p_token = $p_parse->get_token until $p_token->is_start_tag('tr');
-		}
-		$p_token = $p_parse->get_token until $p_token->is_end_tag('td');
-		$p_token = $p_parse->get_token until $p_token->is_text
-		  && $p_token->as_is !~ /^\s+$|^(&nbsp;)+$/
-		  || $p_token->is_end_tag('tr');
-		$row{user_msnm} = $p_token->as_is if $p_token->is_text;
-		# user_yim
-		$p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
-		$p_token = $p_parse->get_token until $p_token->is_end_tag('td');
-		$p_token = $p_parse->get_token until $p_token->is_start_tag('a')
-		  && $p_token->get_attr('href') =~ /target=(.+?)(&|$)/
-		  || $p_token->is_end_tag('tr');
-		$row{user_yim} = $1 if $p_token->is_start_tag('a');
-		# user_aim
-		$p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
-		$p_token = $p_parse->get_token until $p_token->is_end_tag('td');
-		$p_token = $p_parse->get_token until $p_token->is_start_tag('a')
-		  && $p_token->get_attr('href') =~ /screenname=(.+?)(&|$)/
-		  || $p_token->is_end_tag('tr');
-		$row{user_aim} = $1 if $p_token->is_start_tag('a');
-		# user_icq
-		$p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
-		$p_token = $p_parse->get_token until $p_token->is_end_tag('td');
-		$p_token = $p_parse->get_token until $p_token->is_start_tag('a')
-		  && $p_token->get_attr('href') =~ /to=(.+?)(&|$)/
-		  || $p_token->is_end_tag('tr');
-		$row{user_icq} = $1 if $p_token->is_start_tag('a');
+            # get profile info
+            if ($self->{verbose}) {
+                print "getting the profile info for '$row{username}'\n";
+            }
+            # make a copy of the $mech object in order to get the profile page
+            my $p_mech = {%{$mech}};
+            bless $p_mech, "WWW::Mechanize";
+            my $urlp = $self->compute_url("profile.php", "mode=viewprofile&u=$row{user_id}");
+            for (1..$self->{max_tries}) {
+                $p_mech->get($urlp);
+                last if $p_mech->success && $p_mech->status == 200;
+                print "Failed to enter profile (try $_ out of $self->{max_tries})\n";
+            }
+            next unless $p_mech->success && $p_mech->status == 200;
+            my $p_parse;
+            $p_parse = HTML::TokeParser::Simple->new( \$p_mech->content );
+            $p_parse->unbroken_text( 1 );
+            my $p_token;
+            $p_token = $p_parse->get_token;
+            $p_token = $p_parse->get_token until $p_token->get_attr('class')
+              eq 'forumline';
+            $p_token = $p_parse->get_token until $p_token->get_attr('class')
+              =~ /row/ && $p_token->is_start_tag('td');
+            # user_avatar
+            while ($p_token = $p_parse->get_token) {
+                last if $p_token->is_end_tag('td');
+                if ($p_token->is_tag('img')) {
+                    $row{user_avatar} = $p_token->get_attr('src');
+                    (my $b_url = $p_mech->uri) =~ s%^(.*/).*$%$1%;
+                    $row{user_avatar} = $b_url . $row{user_avatar} if $row{user_avatar} !~ m%^http://%;
+                    $row{user_avatar_type} = 2;
+                    last;
+                }
+            }
+            #print "$row{username} - $row{user_avatar}\n";
+            # user_occ
+            #for (1..5) {
+                #$p_token = $p_parse->get_token;
+                #$p_token = $p_parse->get_token until $p_token->is_start_tag('tr');
+            #}
+            #$p_token = $p_parse->get_token until $p_token->is_end_tag('td');
+            #$p_token = $p_parse->get_token until $p_token->is_text
+              #&& $p_token->as_is !~ /^\s+$|^(&nbsp;)+$/
+              #|| $p_token->is_end_tag('tr');
+            $p_token = $p_parse->get_token until $p_token->is_text && $p_token->as_is =~ /^$self->{profile_string_occupation}:/i;
+            $p_token = $p_parse->get_token until $p_token->is_start_tag('span');
+            $p_token = $p_parse->get_token until $p_token->is_text;
+            $row{user_occ} = $p_token->as_is if $p_token->as_is !~ /^\s+$|^(&nbsp;)+$/;
+            # user_interests
+            $p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
+            $p_token = $p_parse->get_token until $p_token->is_end_tag('td');
+            $p_token = $p_parse->get_token until $p_token->is_text
+              && $p_token->as_is !~ /^\s+$|^(&nbsp;)+$/
+              || $p_token->is_end_tag('tr');
+            $row{user_interests} = $p_token->as_is if $p_token->is_text;
+            # user_msnm
+            #$p_token = $p_parse->get_token until $p_token->is_start_tag('table');
+            #for (1..3) {
+                #$p_token = $p_parse->get_token;
+                #$p_token = $p_parse->get_token until $p_token->is_start_tag('tr');
+            #}
+            #$p_token = $p_parse->get_token until $p_token->is_end_tag('td');
+            #$p_token = $p_parse->get_token until $p_token->is_text
+              #&& $p_token->as_is !~ /^\s+$|^(&nbsp;)+$/
+              #|| $p_token->is_end_tag('tr');
+            $p_token = $p_parse->get_token until $p_token->is_text && $p_token->as_is =~ /^$self->{profile_string_msn}:/i;
+            $p_token = $p_parse->get_token until $p_token->is_start_tag('span');
+            $p_token = $p_parse->get_token until $p_token->is_text;
+            $row{user_msnm} = $p_token->as_is if $p_token->as_is !~ /^\s+$|^(&nbsp;)+$/;
+            # user_yim
+            $p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
+            $p_token = $p_parse->get_token until $p_token->is_end_tag('td');
+            $p_token = $p_parse->get_token until $p_token->is_start_tag('a')
+              && $p_token->get_attr('href') =~ /target=(.+?)(&|$)/
+              || $p_token->is_end_tag('tr');
+            $row{user_yim} = $1 if $p_token->is_start_tag('a');
+            # user_aim
+            $p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
+            $p_token = $p_parse->get_token until $p_token->is_end_tag('td');
+            $p_token = $p_parse->get_token until $p_token->is_start_tag('a')
+              && $p_token->get_attr('href') =~ /screenname=(.+?)(&|$)/
+              || $p_token->is_end_tag('tr');
+            $row{user_aim} = $1 if $p_token->is_start_tag('a');
+            # user_icq
+            $p_token = $p_parse->get_token until $p_token->is_end_tag('tr');
+            $p_token = $p_parse->get_token until $p_token->is_end_tag('td');
+            $p_token = $p_parse->get_token until $p_token->is_start_tag('a')
+              && $p_token->get_attr('href') =~ /icq\.com.*=(\d+?)(&|$)/
+              || $p_token->is_end_tag('tr');
+            $row{user_icq} = $1 if $p_token->is_start_tag('a');
 	    }
 	    #while( my ($k, $v) = each %row ) {
 	     #print "$k : $v\n";
@@ -647,9 +657,6 @@ sub get_users {
 	@{$self->{users}} = ();
     }
     $self->create_groups;
-    if ($self->{verbose}) {
-    	print "\n";
-    }
 }
 
 # $_[0]=$topic_id, $_[1]=$page_number
@@ -1685,7 +1692,7 @@ WWW::phpBB - phpBB2 forum scraper
      topic_link_regex_t => qr/topic,(\d+),/,
      topic_link1 => "topic,%d.html",
      topic_link2 => "",
-     profile_info => 0,
+     profile_string_occupation => "beruf",
      alternative_page_number_regex_forum => qr/forum,\d+,(\d+)/,
      alternative_page_number_regex_topic => qr/topic,\d+,(\d+)/,
     );
