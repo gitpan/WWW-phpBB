@@ -10,6 +10,8 @@ use Time::Local;
 use DBI();
 use Carp;
 use POSIX ":sys_wait_h";
+use Encode;
+use HTML::Entities;
 
 require Exporter;
 
@@ -17,7 +19,7 @@ our @ISA = qw(Exporter);
 our %EXPORT_TAGS = ();
 our @EXPORT_OK = ();
 our @EXPORT = qw();
-our $VERSION = '0.08';
+our $VERSION = '0.09';
 my $children; # number of spawned processes
 
 # defaults
@@ -171,7 +173,7 @@ sub new {
     $self;
 }
 
-sub forum_login {
+sub forum_login_raw {
     my $self = shift;
     if (!exists $self->{forum_user} || !exists $self->{forum_passwd}) {
     	print "can't login without a forum_user and forum_passwd\n";
@@ -196,7 +198,20 @@ sub forum_login {
     croak "gave up...\n" unless $self->{mmech}->success && $self->{mmech}->status == 200;
 }
 
-sub forum_logout {
+# wrapper for forum_login_raw() that retries in case of errors
+sub forum_login {
+    my $self = shift;
+    for (1..$self->{max_tries}) {
+        eval {
+            $self->forum_login_raw(@_);
+            1;
+        } and last;
+	    print "failed (try $_ out of $self->{max_tries})\n";
+        sleep(1)
+    }
+}
+
+sub forum_logout_raw {
     my $self = shift;
     return unless exists $self->{forum_user} && exists $self->{forum_passwd};
     if ($self->{verbose}) {
@@ -215,6 +230,19 @@ sub forum_logout {
     croak "gave up...\n" unless $self->{mmech}->success && $self->{mmech}->status == 200;
     # reset the base_uri
     $self->{mmech}->get($self->{base_url})
+}
+
+# wrapper for forum_logout_raw() that retries in case of errors
+sub forum_logout {
+    my $self = shift;
+    for (1..$self->{max_tries}) {
+        eval {
+            $self->forum_logout_raw(@_);
+            1;
+        } and last;
+	    print "failed (try $_ out of $self->{max_tries})\n";
+        sleep(1)
+    }
 }
 
 sub get_categories_and_forums {
@@ -430,7 +458,7 @@ sub get_topics {
 }
 
 # $_[0]=$page_number
-sub get_users {
+sub get_users_raw {
     my $self = shift;
     if ($self->{verbose}) {
     	print "getting users...\n";
@@ -659,6 +687,19 @@ sub get_users {
     $self->create_groups;
 }
 
+# wrapper for get_users_raw() that retries in case of errors
+sub get_users {
+    my $self = shift;
+    for (1..$self->{max_tries}) {
+        eval {
+            $self->get_users_raw(@_);
+            1;
+        } and last;
+	    print "failed (try $_ out of $self->{max_tries})\n";
+        sleep(1)
+    }
+}
+
 # $_[0]=$topic_id, $_[1]=$page_number
 sub get_posts {
     my $self = shift;
@@ -878,6 +919,9 @@ sub get_posts_from_page {
 	}
 	## bbcode
 	$text = ${ $self->html_to_bbcode(\$text, 1) };
+    # take care of HTML entities
+    $text = decode_entities($text);
+    $text = encode_entities($text);
 
 	$t_row{post_text} = $text;
 	# poster_id
@@ -913,7 +957,7 @@ sub get_posts_from_page {
     }
 }
 
-sub update_users {
+sub update_users_raw {
     my $self = shift;
     $self->{db_insert} = 0;
     my $page = -1;
@@ -957,6 +1001,19 @@ sub update_users {
     }
     $self->insert_array(\@new, 'users');
     $self->create_groups;
+}
+
+# wrapper for update_users_raw() that retries in case of errors
+sub update_users {
+    my $self = shift;
+    for (1..$self->{max_tries}) {
+        eval {
+            $self->update_users_raw(@_);
+            1;
+        } and last;
+	    print "failed (try $_ out of $self->{max_tries})\n";
+        sleep(1)
+    }
 }
 
 sub update_topics {
@@ -1508,26 +1565,30 @@ $SIG{CHLD} = \&reaper;
 sub parallelize {
     my $self = shift;
     my ($func_ref) = @_;
-    
-    if ($children < $self->{max_children}) { # fork a subprocess
-	if (my $pid = fork) {
-	    # parent
-	    $children++;
-	    if ($children == $self->{max_children}) {
-		wait;
-		$children--;
-	    }
-	} else {
-	    # child
-	    croak "can't fork" if undef $pid;
-	    # the db link was destroyed by forking. create it again
-	    $self->{dbh}{InactiveDestroy} = 1;
-	    $self->{dbh} = DBI->connect("DBI:mysql:database=$self->{db_database};host=$self->{db_host};mysql_compression=$self->{db_compression}",
-		$self->{db_user}, $self->{db_passwd}, {AutoCommit => 1, RaiseError => 1});
-	    # run function
+    if($self->{max_children} < 2) {
+        # avoid forking when parallelism is not requested (workaround for a windoze bug)
 	    &$func_ref;
-	    exit;
-	}
+    } else {
+        if ($children < $self->{max_children}) { # fork a subprocess
+            if (my $pid = fork) {
+                # parent
+                $children++;
+                if ($children == $self->{max_children}) {
+                    wait;
+                    $children--;
+                }
+            } else {
+                # child
+                croak "can't fork" if undef $pid;
+                # the db link was destroyed by forking. create it again
+                $self->{dbh}{InactiveDestroy} = 1;
+                $self->{dbh} = DBI->connect("DBI:mysql:database=$self->{db_database};host=$self->{db_host};mysql_compression=$self->{db_compression}",
+                    $self->{db_user}, $self->{db_passwd}, {AutoCommit => 1, RaiseError => 1});
+                # run function
+                &$func_ref;
+                exit;
+            }
+        }
     }
 }
 
@@ -1535,7 +1596,7 @@ sub parallelize {
 # integrating functions #
 #########################
 
-sub scrape_forum_common {
+sub scrape_forum_common_raw {
     my $self = shift;
     if ($self->{verbose}) {
     	print "getting categories and forums...";
@@ -1564,7 +1625,20 @@ sub scrape_forum_common {
     $self->update_forum_first_last_post($_->{forum_id}) for @{$self->{forums}};
 }
 
-sub update_forum_common {
+# wrapper for scrape_forum_common_raw() that retries in case of errors
+sub scrape_forum_common {
+    my $self = shift;
+    for (1..$self->{max_tries}) {
+        eval {
+            $self->scrape_forum_common_raw(@_);
+            1;
+        } and last;
+	    print "failed (try $_ out of $self->{max_tries})\n";
+        sleep(1)
+    }
+}
+
+sub update_forum_common_raw {
     my $self = shift;
     $self->{db_insert} = 0;
     if ($self->{verbose}) {
@@ -1589,6 +1663,19 @@ sub update_forum_common {
     	}
     	@{$self->{topics}} = ();
 	$self->update_forum_first_last_post($_->{forum_id});
+    }
+}
+
+# wrapper for update_forum_common_raw() that retries in case of errors
+sub update_forum_common {
+    my $self = shift;
+    for (1..$self->{max_tries}) {
+        eval {
+            $self->update_forum_common_raw(@_);
+            1;
+        } and last;
+	    print "failed (try $_ out of $self->{max_tries})\n";
+        sleep(1)
     }
 }
 

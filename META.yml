@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               WWW-phpBB
-version:            0.08
+version:            0.09
 abstract:           phpBB2 forum scraper
 author:
     - Stefan Talpalaru <stefantalpalaru@yahoo.com>

@@ -1,5 +1,10 @@
 Revision history for Perl extension WWW::phpBB.
 
+0.09  Wed May 04 17:46:47 2011
+	- don't fork if max_children is 1 (work around a Windows issue)
+	- exception handling and retries for forum_login(), get_users(), scrape_forum_common(), forum_logout(), update_users(), update_forum_common()
+	- encode to HTML entities non-ASCII characters in post bodies (solves a unicode issue in perl-5.12)
+
 0.08  Sat Feb 05 22:05:38 2011
 	- more flexible user profile scraping
 
